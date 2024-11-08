@@ -163,7 +163,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    console.log("****************send_message data.room", data.room);
+    console.log("****************send_message data.room", data.room, JSON.stringify(data));
     io.to(data.room).emit('receive_message', data);
   });
 
@@ -180,6 +180,7 @@ io.on('connection', (socket) => {
           if (rooms[room].owner === username) {
             // Optionally, handle room closure or assign a new owner
             delete rooms[room];
+            console.log(`Closing Room ${room} as owner ${username} has left the room.`)
             io.to(room).emit('room_closed', { message: 'Room owner has left. Room is closed.' });
           }
         }
