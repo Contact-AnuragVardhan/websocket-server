@@ -108,7 +108,7 @@ const getUserRooms = async (username, socket) => {
   }
 };
 
-const getRoomMessages = async (room, socket, page, pageSize) => {
+/*const getRoomMessages = async (room, socket, page, pageSize) => {
   try {
     let start = 0;
     let end = -1;
@@ -124,7 +124,38 @@ const getRoomMessages = async (room, socket, page, pageSize) => {
     console.error('Error getting room messages:', error);
     throw error;
   }
+};*/
+
+const getRoomMessages = async (room, page = 1, pageSize = 50, socket) => {
+  try {
+    const totalMessages = await pubClient.lLen(`room:${room}:messages`);
+    
+    const end = totalMessages - (page - 1) * pageSize - 1;
+    const start = Math.max(0, end - pageSize + 1);
+
+    console.log(`Total Message for room ${room} is ${totalMessages} and returning messages from ${start} to ${end} 
+      with parameters Page ${page} and Page Size ${pageSize}`);
+    
+    if (start > end || end < 0) {
+      return [];
+    }
+
+    const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
+    const allMessagesStr = await pubClient.lRange(`room:${room}:messages`, 0, -1);
+    const allMessages = allMessagesStr.map((msg) => JSON.parse(msg));
+    console.log(`All messages for room ${room} is ${JSON.stringify(allMessages)}`);
+    console.log(`From All Start Message is ${JSON.stringify(allMessages[0])} and end Message is ${JSON.stringify(allMessages[allMessages.length - 1])}`);
+    const messages = storedMessages.map((msg) => JSON.parse(msg));
+    //const retVal = messages.reverse(); 
+    console.log(`Start Message is ${JSON.stringify(messages[0])} and end Message is ${JSON.stringify(messages[messages.length - 1])}`);
+    return messages;
+  } catch (error) {
+    console.error('Error getting room messages:', error);
+    throw error;
+  }
 };
+
+
 
 const getAllRooms = async (socket) => {
   try {
@@ -230,7 +261,7 @@ io.on('connection', (socket) => {
 
   socket.on('get_room_messages', async ({ room }) => {
     try {
-      const messages = await getRoomMessages(room, socket, -1, -1);
+      const messages = await getRoomMessages(room, -1, -1, socket);
       socket.emit('message_history', { room, messages });
     } catch (error) {
       socket.emit('error_message', { message: 'Failed to get room messages.' });
@@ -239,7 +270,7 @@ io.on('connection', (socket) => {
 
   socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50 }) => {
     try {
-      const messages = await getRoomMessages(room, socket, page, pageSize);
+      const messages = await getRoomMessages(room, page, pageSize, socket);
       socket.emit('message_history_pages', { room, messages, page, pageSize });
     } catch (error) {
       socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
