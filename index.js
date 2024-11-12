@@ -71,7 +71,7 @@ const createRoom = async (room, username, socket, fromEvent) => {
 
     // Emit to all clients that a new room has been created
     io.emit('room_created', { room });
-
+    addDefaultMessage(room, `${room} created by ${username}`);
     io.to(room).emit('user_list', rooms[room].users);
     getAllRooms(socket);
     getUserRooms(username, socket);
@@ -90,6 +90,7 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
     socket.join(room);
     socket.rooms.add(room);
     socket.username = username;
+    addDefaultMessage(room, `${username} joined the ${room}`);
     io.to(room).emit('user_list', rooms[room].users);
     getAllRooms(socket);
     getUserRooms(username, socket);
@@ -97,6 +98,17 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
   }
   return false;
 };
+
+const getAllUserInRooms = async (room, socket) => {
+  try {
+    const users = await pubClient.sMembers(`room:${room}:users`);
+    socket.emit('users_in_room', {room , users});
+  } catch (error) {
+    console.error(`Error getting users in room ${room}:`, error);
+    socket.emit('error_message', { message: `Failed to get users in room ${room}` });
+  }
+ 
+}
 
 const getUserRooms = async (username, socket) => {
   try {
@@ -141,12 +153,12 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket) => {
     }
 
     const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
-    const allMessagesStr = await pubClient.lRange(`room:${room}:messages`, 0, -1);
-    const allMessages = allMessagesStr.map((msg) => JSON.parse(msg));
-    console.log(`All messages for room ${room} is ${JSON.stringify(allMessages)}`);
-    console.log(`From All Start Message is ${JSON.stringify(allMessages[0])} and end Message is ${JSON.stringify(allMessages[allMessages.length - 1])}`);
+    //const allMessagesStr = await pubClient.lRange(`room:${room}:messages`, 0, -1);
+    //const allMessages = allMessagesStr.map((msg) => JSON.parse(msg));
+    //console.log(`All messages for room ${room} is ${JSON.stringify(allMessages)}`);
+    //console.log(`From All Start Message is ${JSON.stringify(allMessages[0])} and end Message is ${JSON.stringify(allMessages[allMessages.length - 1])}`);
     const messages = storedMessages.map((msg) => JSON.parse(msg));
-    //const retVal = messages.reverse(); 
+    //messages.reverse(); 
     console.log(`Start Message is ${JSON.stringify(messages[0])} and end Message is ${JSON.stringify(messages[messages.length - 1])}`);
     return messages;
   } catch (error) {
@@ -154,8 +166,6 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket) => {
     throw error;
   }
 };
-
-
 
 const getAllRooms = async (socket) => {
   try {
@@ -168,6 +178,44 @@ const getAllRooms = async (socket) => {
   }
   return null;
 }
+
+const addMessage = async (data, messageType) => {
+  if(data) {
+    try {
+      const room = data.room;
+      const username = data.author;
+      // Store the message in Redis with expiration
+      const messageData = {...data, 
+          author: data.author || username, 
+          messageType: data.messageType || messageType
+      };
+        
+  
+      await retry(async () => {
+        await pubClient.rPush(`room:${room}:messages`, JSON.stringify(messageData));
+        // Set expiration time for messages (e.g., 7 days)
+        await pubClient.expire(`room:${room}:messages`, 7 * 24 * 60 * 60);
+      }, {
+        retries: 5, // Number of retry attempts
+        factor: 2, // Exponential backoff factor
+        minTimeout: 100, // Minimum wait time between retries in ms
+      });
+  
+      console.log(`Message from ${username} in room ${room}:`, data.message);
+      io.to(room).emit('receive_message', messageData);
+    }
+    catch (error) {
+      console.error('Error sending message:', error);
+      throw error;
+    }
+  }
+  
+};
+
+const addDefaultMessage = (room, message) => {
+  const objMessage = { room, author: 'Blackbox', message, time: new Date().toISOString()};
+  addMessage(objMessage, 'system');
+};
 
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
@@ -228,27 +276,7 @@ io.on('connection', (socket) => {
       } else {
         await addUserInRoom(room, username, socket, 'send_message');
       }
-
-      // Store the message in Redis with expiration
-      const messageData = {
-        room,
-        author: username,
-        message: data.message,
-        time: data.time,
-      };
-
-      await retry(async () => {
-        await pubClient.rPush(`room:${room}:messages`, JSON.stringify(messageData));
-        // Set expiration time for messages (e.g., 7 days)
-        await pubClient.expire(`room:${room}:messages`, 7 * 24 * 60 * 60);
-      }, {
-        retries: 5, // Number of retry attempts
-        factor: 2, // Exponential backoff factor
-        minTimeout: 100, // Minimum wait time between retries in ms
-      });
-
-      console.log(`Message from ${username} in room ${room}:`, data.message);
-      io.to(room).emit('receive_message', messageData);
+      addMessage(data, 'user');
     } catch (error) {
       console.error('Error sending message:', error);
       socket.emit('error_message', { message: 'Failed to send message.' });
@@ -258,6 +286,11 @@ io.on('connection', (socket) => {
   socket.on('get_user_rooms', async ({ username }) => {
     getUserRooms(username, socket);
   });
+
+   socket.on('get_user_in_rooms', async ({ room }) => {
+    getAllUserInRooms(room, socket);
+  });
+
 
   socket.on('get_room_messages', async ({ room }) => {
     try {
@@ -289,13 +322,13 @@ io.on('connection', (socket) => {
         // Get the rooms the user is part of
         const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
 
-        for (const room of userRooms) {
+         //not deleting the room as the users can rejoin the room and should see the old messages
+        /*for (const room of userRooms) {
           await pubClient.sRem(`room:${room}:users`, username);
           if (rooms[room]) {
             rooms[room].users = rooms[room].users.filter((user) => user !== username);
             io.to(room).emit('user_list', rooms[room].users);
-            //not deleting the room as the users can rejoin the room and should see the old messages
-            /*if (rooms[room].users.length === 0) {
+            if (rooms[room].users.length === 0) {
               // Delete the room's messages and users from Redis
               await pubClient.del(`room:${room}:messages`);
               await pubClient.del(`room:${room}:users`);
@@ -304,9 +337,9 @@ io.on('connection', (socket) => {
 
               // Emit to all clients that a room has been deleted
               io.emit('room_deleted', { room });
-            }*/
+            }
           }
-        }
+        }*/
 
         // Remove the user's socket ID and rooms
         //not deleting the room as the users can rejoin the room and should see the old messages
