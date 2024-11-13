@@ -71,7 +71,7 @@ const createRoom = async (room, username, socket, fromEvent) => {
 
     // Emit to all clients that a new room has been created
     io.emit('room_created', { room });
-    addDefaultMessage(room, `${room} created by ${username}`);
+    addDefaultMessage(room, username, `${room} created by ${username}`);
     io.to(room).emit('user_list', rooms[room].users);
     getAllRooms(socket);
     getUserRooms(username, socket);
@@ -90,7 +90,7 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
     socket.join(room);
     socket.rooms.add(room);
     socket.username = username;
-    addDefaultMessage(room, `${username} joined the ${room}`);
+    addDefaultMessage(room, username, `${username} joined the ${room}`);
     io.to(room).emit('user_list', rooms[room].users);
     getAllRooms(socket);
     getUserRooms(username, socket);
@@ -202,6 +202,7 @@ const addMessage = async (data, messageType) => {
       });
   
       console.log(`Message from ${username} in room ${room}:`, data.message);
+      console.log(`added message ${JSON.stringify(messageData)}`);
       io.to(room).emit('receive_message', messageData);
     }
     catch (error) {
@@ -212,8 +213,9 @@ const addMessage = async (data, messageType) => {
   
 };
 
-const addDefaultMessage = (room, message) => {
-  const objMessage = { room, author: 'Blackbox', message, time: new Date().toISOString()};
+const addDefaultMessage = (room, username, message) => {
+  const date = new Date();
+  const objMessage = { id: date.getTime(), room, author: 'Blackbox', message, affectedUser: username, time: date.toISOString()};
   addMessage(objMessage, 'system');
 };
 
