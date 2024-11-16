@@ -102,12 +102,12 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
 const getAllUserInRooms = async (room, socket) => {
   try {
     const users = await pubClient.sMembers(`room:${room}:users`);
-    socket.emit('users_in_room', {room , users});
+    socket.emit('users_in_room', { room, users });
   } catch (error) {
     console.error(`Error getting users in room ${room}:`, error);
     socket.emit('error_message', { message: `Failed to get users in room ${room}` });
   }
- 
+
 }
 
 const getUserRooms = async (username, socket) => {
@@ -141,13 +141,13 @@ const getUserRooms = async (username, socket) => {
 const getRoomMessages = async (room, page = 1, pageSize = 50, socket) => {
   try {
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
-    
+
     const end = totalMessages - (page - 1) * pageSize - 1;
     const start = Math.max(0, end - pageSize + 1);
 
     console.log(`Total Message for room ${room} is ${totalMessages} and returning messages from ${start} to ${end} 
       with parameters Page ${page} and Page Size ${pageSize}`);
-    
+
     if (start > end || end < 0) {
       return [];
     }
@@ -180,17 +180,18 @@ const getAllRooms = async (socket) => {
 }
 
 const addMessage = async (data, messageType) => {
-  if(data) {
+  if (data) {
     try {
       const room = data.room;
       const username = data.author;
       // Store the message in Redis with expiration
-      const messageData = {...data, 
-          author: data.author || username, 
-          messageType: data.messageType || messageType
+      const messageData = {
+        ...data,
+        author: data.author || username,
+        messageType: data.messageType || messageType
       };
-        
-  
+
+
       await retry(async () => {
         await pubClient.rPush(`room:${room}:messages`, JSON.stringify(messageData));
         // Set expiration time for messages (e.g., 7 days)
@@ -200,7 +201,7 @@ const addMessage = async (data, messageType) => {
         factor: 2, // Exponential backoff factor
         minTimeout: 100, // Minimum wait time between retries in ms
       });
-  
+
       console.log(`Message from ${username} in room ${room}:`, data.message);
       console.log(`added message ${JSON.stringify(messageData)}`);
       io.to(room).emit('receive_message', messageData);
@@ -210,12 +211,12 @@ const addMessage = async (data, messageType) => {
       throw error;
     }
   }
-  
+
 };
 
 const addDefaultMessage = (room, username, message) => {
   const date = new Date();
-  const objMessage = { id: date.getTime(), room, author: 'Blackbox', message, affectedUser: username, time: date.toISOString()};
+  const objMessage = { id: date.getTime(), room, author: 'Blackbox', message, affectedUser: username, time: date.toISOString() };
   addMessage(objMessage, 'system');
 };
 
@@ -225,11 +226,16 @@ io.on('connection', (socket) => {
   socket.on('user_connected', async ({ username }) => {
     socket.username = username;
 
+    const oldSocketId = await pubClient.get(`user:${username}:socket`);
+    if (oldSocketId && oldSocketId !== socket.id) {
+      console.log(`Disconnecting old socket ${oldSocketId} for username ${username}`);
+      io.in(oldSocketId).disconnectSockets(true);
+    }
+
     await pubClient.set(`user:${username}:socket`, socket.id);
 
     const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
 
-    // Rejoin the rooms
     for (const room of userRooms) {
       socket.join(room);
       socket.rooms.add(room); // Update socket's rooms set
@@ -289,7 +295,7 @@ io.on('connection', (socket) => {
     getUserRooms(username, socket);
   });
 
-   socket.on('get_user_in_rooms', async ({ room }) => {
+  socket.on('get_user_in_rooms', async ({ room }) => {
     getAllUserInRooms(room, socket);
   });
 
@@ -324,7 +330,7 @@ io.on('connection', (socket) => {
         // Get the rooms the user is part of
         const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
 
-         //not deleting the room as the users can rejoin the room and should see the old messages
+        //not deleting the room as the users can rejoin the room and should see the old messages
         /*for (const room of userRooms) {
           await pubClient.sRem(`room:${room}:users`, username);
           if (rooms[room]) {
@@ -345,7 +351,7 @@ io.on('connection', (socket) => {
 
         // Remove the user's socket ID and rooms
         //not deleting the room as the users can rejoin the room and should see the old messages
-        //await pubClient.del(`user:${username}:socket`);
+        await pubClient.del(`user:${username}:socket`);
         //await pubClient.del(`user:${username}:rooms`);
       } catch (error) {
         console.error('Error during disconnect:', error);
