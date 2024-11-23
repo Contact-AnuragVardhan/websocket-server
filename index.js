@@ -24,6 +24,14 @@ const subClient = pubClient.duplicate();
 pubClient.on('error', (err) => console.error('Redis Pub Client Error', err));
 subClient.on('error', (err) => console.error('Redis Sub Client Error', err));
 
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
+});
+
+
 (async () => {
   try {
     await pubClient.connect();
@@ -43,19 +51,193 @@ subClient.on('error', (err) => console.error('Redis Sub Client Error', err));
       rooms[roomName].messages = messages;
     }
     console.log('Loaded rooms, users, and messages from Redis:', rooms);
+
+    io.adapter(createAdapter(pubClient, subClient));
+
+    const PORT = process.env.PORT || 3001;
+    server.listen(PORT, () => {
+      console.log(`WebSocket server running on port ${PORT}`);
+    });
+
+    io.on('connection', (socket) => {
+      console.log(`User connected: ${socket.id}`);
+    
+      socket.on('user_connected', async ({ username }) => {
+        socket.username = username;
+    
+        const oldSocketId = await pubClient.get(`user:${username}:socket`);
+        if (oldSocketId && oldSocketId !== socket.id) {
+          console.log(`Disconnecting old socket ${oldSocketId} for username ${username}`);
+          io.in(oldSocketId).disconnectSockets(true);
+        }
+    
+        await pubClient.set(`user:${username}:socket`, socket.id);
+        const newSocketId = await pubClient.get(`user:${username}:socket`);
+        console.log(`New socketId is ${newSocketId} for username ${username}`);
+    
+        //below code is for letting users rejoin all the room
+        const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
+    
+        for (const room of userRooms) {
+    
+          socket.join(room);
+          socket.rooms.add(room);
+          socket.username = username;
+          console.log(`User ${username} rejoined room ${room}`);
+
+
+    
+          const latestMessage = await getMessageNotificationForRoom(username, room);
+          if (latestMessage) {
+            socket.emit('new_message_notification', { room, message: latestMessage });
+          }
+        }
+        //sendNotificationForAllRoom(username, socket);
+      });
+    
+      socket.on('create_room', async ({ room, username }) => {
+        try {
+          if (!rooms[room]) {
+            await createRoom(room, username, socket, 'create_room');
+          } else {
+            console.log(`Room ${room} already exists with details :`, JSON.stringify(rooms[room]));
+            await addUserInRoom(room, username, socket, 'create_room');
+          }
+          socket.emit('joined_room', { room });
+        } catch (error) {
+          console.error('Error creating room:', error);
+          socket.emit('error_message', { message: 'Failed to create room.' });
+        }
+      });
+    
+      socket.on('join_room', async ({ room, username }) => {
+        try {
+          if (rooms[room]) {
+            await addUserInRoom(room, username, socket, 'join_room');
+          } else {
+            await createRoom(room, username, socket, 'join_room');
+          }
+          socket.emit('joined_room', { room });
+        } catch (error) {
+          console.error('Error joining room:', error);
+          socket.emit('error_message', { message: 'Failed to join room.' });
+        }
+      });
+    
+      socket.on('send_message', async (data) => {
+        const room = data.room;
+        const username = data.author;
+    
+        // Implement retry logic for Redis operations
+        try {
+          if (!rooms[room]) {
+            await createRoom(room, username, socket, 'send_message');
+          } else {
+            await addUserInRoom(room, username, socket, 'send_message');
+          }
+          addMessage(data, 'user');
+        } catch (error) {
+          console.error('Error sending message:', error);
+          socket.emit('error_message', { message: 'Failed to send message.' });
+        }
+      });
+    
+      socket.on('get_user_rooms', async ({ username }) => {
+        getUserRooms(username, socket);
+      });
+    
+      socket.on('get_user_in_rooms', async ({ room }) => {
+        getAllUserInRooms(room, socket);
+      });
+    
+    
+      socket.on('get_room_messages', async ({ room }) => {
+        try {
+          const messages = await getRoomMessages(room, -1, -1, socket);
+          socket.emit('message_history', { room, messages });
+        } catch (error) {
+          socket.emit('error_message', { message: 'Failed to get room messages.' });
+        }
+      });
+    
+      socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50 }) => {
+        try {
+          const messages = await getRoomMessages(room, page, pageSize, socket);
+          socket.emit('message_history_pages', { room, messages, page, pageSize });
+        } catch (error) {
+          socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
+        }
+      });
+    
+      socket.on('get_all_rooms', async () => {
+        getAllRooms();
+      });
+    
+      socket.on('update_last_read_message', async ({ room, username }) => {
+        try {
+          console.log(`Updating Last Read Message for Room ${room} for User ${username}`);
+          const totalMessages = await pubClient.lLen(`room:${room}:messages`);
+          const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
+          const latestMessage = JSON.parse(latestMessageData);
+    
+          if (latestMessage) {
+            await pubClient.set(`user:${socket.username || username}:room:${room}:lastReadMessage`, latestMessage.time);
+          }
+        } catch (error) {
+          console.error('Error updating last read message:', error);
+        }
+      });
+    
+      socket.on('disconnect', async () => {
+        const username = socket.username;
+    
+        if (username) {
+          try {
+            // Get the rooms the user is part of
+            const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
+    
+            //not deleting the room as the users can rejoin the room and should see the old messages
+            /*for (const room of userRooms) {
+              await pubClient.sRem(`room:${room}:users`, username);
+              if (rooms[room]) {
+                rooms[room].users = rooms[room].users.filter((user) => user !== username);
+                io.to(room).emit('user_list', rooms[room].users);
+                if (rooms[room].users.length === 0) {
+                  // Delete the room's messages and users from Redis
+                  await pubClient.del(`room:${room}:messages`);
+                  await pubClient.del(`room:${room}:users`);
+                  delete rooms[room];
+                  console.log(`Room ${room} has no users. Deleted.`);
+    
+                  // Emit to all clients that a room has been deleted
+                  io.emit('room_deleted', { room });
+                }
+              }
+            }*/
+    
+            // Remove the user's socket ID and rooms
+            //not deleting the room as the users can rejoin the room and should see the old messages
+            const socketId = await pubClient.get(`user:${username}:socket`);
+            console.log(`In delete old socket id ${socket.id} and new socket is ${socketId}`);
+            if(socketId === socket.id) {
+              console.log(`SocketId is ${socketId} is getting deleted for username ${username}`);
+              await pubClient.del(`user:${username}:socket`);
+            }
+            
+            //await pubClient.del(`user:${username}:rooms`);
+          } catch (error) {
+            console.error('Error during disconnect:', error);
+          }
+        }
+        console.log(`User disconnected: ${socket.id}`);
+      });
+    });
+
+
   } catch (error) {
     console.error('Error connecting to Redis:', error);
   }
 })();
-
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
-});
-
-io.adapter(createAdapter(pubClient, subClient));
 
 const createRoom = async (room, username, socket, fromEvent) => {
   if (!rooms[room]) {
@@ -72,7 +254,7 @@ const createRoom = async (room, username, socket, fromEvent) => {
     // Emit to all clients that a new room has been created
     io.emit('room_created', { room });
     addDefaultMessage(room, username, `${room} created by ${username}`);
-    io.to(room).emit('user_list', rooms[room].users);
+    io.to(room).emit('user_list', { room, users: rooms[room].users });
     getAllRooms(socket);
     getUserRooms(username, socket);
     console.log(`Room ${room} created by ${username}`);
@@ -91,7 +273,7 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
     socket.rooms.add(room);
     socket.username = username;
     addDefaultMessage(room, username, `${username} joined the ${room}`);
-    io.to(room).emit('user_list', rooms[room].users);
+    io.to(room).emit('user_list', { room, users: rooms[room].users });
     getAllRooms(socket);
     getUserRooms(username, socket);
     return rooms[room];
@@ -112,7 +294,17 @@ const getAllUserInRooms = async (room, socket) => {
 
 const getUserRooms = async (username, socket) => {
   try {
-    const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
+    const rooms = await pubClient.sMembers(`user:${username}:rooms`);
+    const userRooms = [];
+    if (rooms.length > 0) {
+      for (const room of rooms) {
+        if(room == '5') {
+          console.log('here');
+        }
+        const latestMessage = await getMessageNotificationForRoom(username, room);
+        userRooms.push({ room, latestMessage });
+      }
+    }
     socket.emit('user_rooms', userRooms);
   } catch (error) {
     console.error('Error getting user rooms:', error);
@@ -158,6 +350,10 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket) => {
     //console.log(`All messages for room ${room} is ${JSON.stringify(allMessages)}`);
     //console.log(`From All Start Message is ${JSON.stringify(allMessages[0])} and end Message is ${JSON.stringify(allMessages[allMessages.length - 1])}`);
     const messages = storedMessages.map((msg) => JSON.parse(msg));
+    if (messages && messages.length > 0 && messages[messages.length - 1]) {
+      const lastMessage = messages[messages.length - 1];
+      await pubClient.set(`user:${socket.username}:room:${room}:lastReadMessage`, lastMessage.time);
+    }
     //messages.reverse(); 
     console.log(`Start Message is ${JSON.stringify(messages[0])} and end Message is ${JSON.stringify(messages[messages.length - 1])}`);
     return messages;
@@ -205,6 +401,16 @@ const addMessage = async (data, messageType) => {
       console.log(`Message from ${username} in room ${room}:`, data.message);
       console.log(`added message ${JSON.stringify(messageData)}`);
       io.to(room).emit('receive_message', messageData);
+
+      // Notifying all users who are part of the room, even if they're not connected to the room
+      const usersInRoom = await pubClient.sMembers(`room:${room}:users`);
+      for (const user of usersInRoom) {
+        const userSocketId = await pubClient.get(`user:${user}:socket`);
+        console.log(`userSocketId for ${user} is ${userSocketId}`);
+        if (userSocketId) {
+          io.to(userSocketId).emit('new_message_notification', { room, message: messageData });
+        }
+      }
     }
     catch (error) {
       console.error('Error sending message:', error);
@@ -220,148 +426,38 @@ const addDefaultMessage = (room, username, message) => {
   addMessage(objMessage, 'system');
 };
 
-io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
-
-  socket.on('user_connected', async ({ username }) => {
-    socket.username = username;
-
-    const oldSocketId = await pubClient.get(`user:${username}:socket`);
-    if (oldSocketId && oldSocketId !== socket.id) {
-      console.log(`Disconnecting old socket ${oldSocketId} for username ${username}`);
-      io.in(oldSocketId).disconnectSockets(true);
+const sendNotificationForAllRoom = async (username, socket) => {
+  const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
+  for (const room of userRooms) {
+    const latestMessage = await getMessageNotificationForRoom(username, room);
+    if (latestMessage) {
+      socket.emit('new_message_notification', { room, message: latestMessage });
     }
+  }
+}
 
-    await pubClient.set(`user:${username}:socket`, socket.id);
+const getMessageNotificationForRoom = async (username, room) => {
+  const lastReadMessageId = await pubClient.get(`user:${username}:room:${room}:lastReadMessage`);
+  const totalMessages = await pubClient.lLen(`room:${room}:messages`);
+  const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
+  const latestMessage = JSON.parse(latestMessageData);
 
-    const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
-
-    for (const room of userRooms) {
-      socket.join(room);
-      socket.rooms.add(room); // Update socket's rooms set
-      socket.username = username;
-      console.log(`User ${username} rejoined room ${room}`);
+  if (lastReadMessageId && isValidDate(lastReadMessageId) && latestMessage) {
+    const latestMessageTime = new Date(latestMessage.time);
+    const lastReadMessageIdTime = new Date(lastReadMessageId);
+    if(latestMessageTime > lastReadMessageIdTime) {
+      return latestMessage;
     }
-  });
+    
+  }
+  return null;
+}
 
-  socket.on('create_room', async ({ room, username }) => {
-    try {
-      if (!rooms[room]) {
-        await createRoom(room, username, socket, 'create_room');
-      } else {
-        console.log(`Room ${room} already exists with details :`, JSON.stringify(rooms[room]));
-        await addUserInRoom(room, username, socket, 'create_room');
-      }
-      socket.emit('joined_room', { room });
-    } catch (error) {
-      console.error('Error creating room:', error);
-      socket.emit('error_message', { message: 'Failed to create room.' });
-    }
-  });
-
-  socket.on('join_room', async ({ room, username }) => {
-    try {
-      if (rooms[room]) {
-        await addUserInRoom(room, username, socket, 'join_room');
-      } else {
-        await createRoom(room, username, socket, 'join_room');
-      }
-      socket.emit('joined_room', { room });
-    } catch (error) {
-      console.error('Error joining room:', error);
-      socket.emit('error_message', { message: 'Failed to join room.' });
-    }
-  });
-
-  socket.on('send_message', async (data) => {
-    const room = data.room;
-    const username = data.author;
-
-    // Implement retry logic for Redis operations
-    try {
-      if (!rooms[room]) {
-        await createRoom(room, username, socket, 'send_message');
-      } else {
-        await addUserInRoom(room, username, socket, 'send_message');
-      }
-      addMessage(data, 'user');
-    } catch (error) {
-      console.error('Error sending message:', error);
-      socket.emit('error_message', { message: 'Failed to send message.' });
-    }
-  });
-
-  socket.on('get_user_rooms', async ({ username }) => {
-    getUserRooms(username, socket);
-  });
-
-  socket.on('get_user_in_rooms', async ({ room }) => {
-    getAllUserInRooms(room, socket);
-  });
+const isValidDate = (dateString) => {
+  const date = new Date(dateString);
+  const retVal = !isNaN(date.getTime());
+  return retVal;
+}
 
 
-  socket.on('get_room_messages', async ({ room }) => {
-    try {
-      const messages = await getRoomMessages(room, -1, -1, socket);
-      socket.emit('message_history', { room, messages });
-    } catch (error) {
-      socket.emit('error_message', { message: 'Failed to get room messages.' });
-    }
-  });
 
-  socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50 }) => {
-    try {
-      const messages = await getRoomMessages(room, page, pageSize, socket);
-      socket.emit('message_history_pages', { room, messages, page, pageSize });
-    } catch (error) {
-      socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
-    }
-  });
-
-  socket.on('get_all_rooms', async () => {
-    getAllRooms();
-  });
-
-  socket.on('disconnect', async () => {
-    const username = socket.username;
-
-    if (username) {
-      try {
-        // Get the rooms the user is part of
-        const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
-
-        //not deleting the room as the users can rejoin the room and should see the old messages
-        /*for (const room of userRooms) {
-          await pubClient.sRem(`room:${room}:users`, username);
-          if (rooms[room]) {
-            rooms[room].users = rooms[room].users.filter((user) => user !== username);
-            io.to(room).emit('user_list', rooms[room].users);
-            if (rooms[room].users.length === 0) {
-              // Delete the room's messages and users from Redis
-              await pubClient.del(`room:${room}:messages`);
-              await pubClient.del(`room:${room}:users`);
-              delete rooms[room];
-              console.log(`Room ${room} has no users. Deleted.`);
-
-              // Emit to all clients that a room has been deleted
-              io.emit('room_deleted', { room });
-            }
-          }
-        }*/
-
-        // Remove the user's socket ID and rooms
-        //not deleting the room as the users can rejoin the room and should see the old messages
-        await pubClient.del(`user:${username}:socket`);
-        //await pubClient.del(`user:${username}:rooms`);
-      } catch (error) {
-        console.error('Error during disconnect:', error);
-      }
-    }
-    console.log(`User disconnected: ${socket.id}`);
-  });
-});
-
-const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`);
-});
