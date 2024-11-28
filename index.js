@@ -1,3 +1,4 @@
+//index.js 
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -116,18 +117,32 @@ const io = new Server(server, {
                 }
             });
 
-            socket.on('send_message', async (data) => {
+            socket.on('send_message', (data) => {
+                const room = data.room;
+                const username = data.author;
+            
+                pubClient.exists(`room:${room}:users`)
+                    .then((roomExists) => {
+                        if (!roomExists) {
+                            return createRoom(room, username, socket, 'send_message');
+                        } else {
+                            return addUserInRoom(room, username, socket, 'send_message');
+                        }
+                    })
+                    .then(() => {
+                        addMessage(data, 'user');
+                    })
+                    .catch((error) => {
+                        logger.error('Error sending message:', error);
+                        socket.emit('error_message', { message: 'Failed to send message.' });
+                    });
+            });
+
+            /*socket.on('send_message', async (data) => {
                 const room = data.room;
                 const username = data.author;
 
                 try {
-
-                    /*// Check if the user is authorized to join the room
-                    const isAuthorized = await checkUserAuthorization(username, room);
-                    if (!isAuthorized) {
-                        socket.emit('error_message', { message: 'Unauthorized access to the room.' });
-                        return;
-                    }*/
 
                     //socket.emit('joined_room', { room });
 
@@ -142,17 +157,37 @@ const io = new Server(server, {
                     logger.error('Error sending message:', error);
                     socket.emit('error_message', { message: 'Failed to send message.' });
                 }
-            });
+            });*/
 
-            socket.on('get_user_rooms', async ({ username }) => {
+            socket.on('get_user_rooms', ({ username }) => {
                 getUserRooms(username, socket);
             });
 
-            socket.on('get_user_in_rooms', async ({ room }) => {
+            socket.on('get_user_in_rooms', ({ room }) => {
                 getAllUserInRooms(room, socket);
             });
 
-            socket.on('get_room_messages', async ({ room }) => {
+            socket.on('get_room_messages', ({ room }) => {
+                getRoomMessages(room, -1, -1, socket)
+                    .then((messages) => {
+                        socket.emit('message_history', { room, messages });
+                    })
+                    .catch((error) => {
+                        socket.emit('error_message', { message: 'Failed to get room messages.' });
+                    });
+            });
+            
+            socket.on('get_room_messages_pages', ({ room, page = 1, pageSize = 50 }) => {
+                getRoomMessages(room, page, pageSize, socket)
+                    .then((messages) => {
+                        socket.emit('message_history_pages', { room, messages, page, pageSize });
+                    })
+                    .catch((error) => {
+                        socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
+                    });
+            });
+
+            /*socket.on('get_room_messages', async ({ room }) => {
                 try {
                     const messages = await getRoomMessages(room, -1, -1, socket);
                     socket.emit('message_history', { room, messages });
@@ -168,13 +203,32 @@ const io = new Server(server, {
                 } catch (error) {
                     socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
                 }
-            });
+            });*/
 
-            socket.on('get_all_rooms', async () => {
+            socket.on('get_all_rooms', () => {
                 getAllRooms(socket);
             });
 
-            socket.on('update_last_read_message', async ({ room, username }) => {
+            socket.on('update_last_read_message', ({ room, username }) => {
+                logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
+                
+                pubClient.lLen(`room:${room}:messages`)
+                    .then((totalMessages) => {
+                        return pubClient.lIndex(`room:${room}:messages`, totalMessages - 1)
+                            .then((latestMessageData) => {
+                                const latestMessage = JSON.parse(latestMessageData);
+                                if (latestMessage) {
+                                    return pubClient.set(`user:${socket.username || username}:room:${room}:lastReadMessage`, latestMessage.time);
+                                }
+                            });
+                    })
+                    .catch((error) => {
+                        logger.error('Error updating last read message:', error);
+                    });
+            });
+            
+
+            /*socket.on('update_last_read_message', async ({ room, username }) => {
                 try {
                     logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
                     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
@@ -187,9 +241,24 @@ const io = new Server(server, {
                 } catch (error) {
                     logger.error('Error updating last read message:', error);
                 }
-            });
+            });*/
 
-            socket.on('disconnect', async () => {
+            socket.on('disconnect', () => {
+                const username = socket.username;
+            
+                if (username) {
+                    logger.info(`SocketId ${socket.id} is getting deleted for username ${username}`);
+                    pubClient.sRem(`user:${username}:sockets`, socket.id)
+                        .catch((error) => {
+                            logger.error('Error during disconnect:', error);
+                        });
+                }
+                
+                logger.info(`User disconnected: ${socket.id}`);
+            });
+            
+
+            /*socket.on('disconnect', async () => {
                 const username = socket.username;
 
                 if (username) {
@@ -201,7 +270,7 @@ const io = new Server(server, {
                     }
                 }
                 logger.info(`User disconnected: ${socket.id}`);
-            });
+            });*/
         });
     } catch (error) {
         logger.error('Error connecting to Redis:', error);
