@@ -34,6 +34,8 @@ const io = new Server(server, {
     maxHttpBufferSize: 1e8, // 100 MB limit
 });
 
+//const isMobileDebug = false;
+
 (async () => {
     try {
         await pubClient.connect();
@@ -43,9 +45,16 @@ const io = new Server(server, {
         io.adapter(createAdapter(pubClient, subClient));
 
         const PORT = process.env.PORT || 3001;
+        /*if(isMobileDebug) {
+            server.listen(PORT, '0.0.0.0', () => {
+                logger.info(`WebSocket server running on port ${PORT}`);
+            });
+        } else {*/
         server.listen(PORT, () => {
             logger.info(`WebSocket server running on port ${PORT}`);
         });
+        //}
+
 
         io.on('connection', (socket) => {
             logger.info(`User connected: ${socket.id}`);
@@ -53,15 +62,8 @@ const io = new Server(server, {
             socket.on('user_connected', async ({ username }) => {
                 socket.username = username;
 
-                const oldSocketId = await pubClient.get(`user:${username}:socket`);
-                if (oldSocketId && oldSocketId !== socket.id) {
-                    logger.info(`Disconnecting old socket ${oldSocketId} for username ${username}`);
-                    io.in(oldSocketId).disconnectSockets(true);
-                }
-
-                await pubClient.set(`user:${username}:socket`, socket.id);
-                const newSocketId = await pubClient.get(`user:${username}:socket`);
-                logger.info(`New socketId is ${newSocketId} for username ${username}`);
+                await pubClient.sAdd(`user:${username}:sockets`, socket.id);
+                logger.info(`New socketId is ${socket.id} for username ${username}`);
 
                 // Rejoin all rooms the user was part of
                 const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
@@ -71,7 +73,7 @@ const io = new Server(server, {
                     socket.username = username;
                     logger.info(`User ${username} rejoined room ${room}`);
 
-                    const latestMessage = await getMessageNotificationForRoom(username, room);
+                    /*const latestMessage = await getMessageNotificationForRoom(username, room);
                     if (latestMessage) {
                         if(latestMessage.author !== username) {
                             socket.emit('new_message_notification', { room, message: latestMessage });
@@ -79,7 +81,7 @@ const io = new Server(server, {
                         else {
                             logger.info(`${latestMessage} not sent to ${username} as ${username} is the Author.`);
                         }
-                    }
+                    }*/
                 }
             });
 
@@ -119,6 +121,16 @@ const io = new Server(server, {
                 const username = data.author;
 
                 try {
+
+                    /*// Check if the user is authorized to join the room
+                    const isAuthorized = await checkUserAuthorization(username, room);
+                    if (!isAuthorized) {
+                        socket.emit('error_message', { message: 'Unauthorized access to the room.' });
+                        return;
+                    }*/
+
+                    //socket.emit('joined_room', { room });
+
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
                         await createRoom(room, username, socket, 'send_message');
@@ -182,16 +194,8 @@ const io = new Server(server, {
 
                 if (username) {
                     try {
-                        // Get the rooms the user is part of
-                        const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
-
-                        // Remove the user's socket ID
-                        const socketId = await pubClient.get(`user:${username}:socket`);
-                        logger.info(`In delete old socket id ${socket.id} and new socket is ${socketId}`);
-                        if (socketId === socket.id) {
-                            logger.info(`SocketId is ${socketId} is getting deleted for username ${username}`);
-                            await pubClient.del(`user:${username}:socket`);
-                        }
+                        logger.info(`SocketId is ${socket.id} is getting deleted for username ${username}`);
+                        await pubClient.sRem(`user:${username}:sockets`, socket.id);
                     } catch (error) {
                         logger.error('Error during disconnect:', error);
                     }
@@ -349,21 +353,23 @@ const addMessage = async (data, messageType) => {
             logger.info(`added message ${JSON.stringify(messageData)}`);
             io.to(room).emit('receive_message', messageData);
 
-            if (messageType !== 'system') {
+            /*if (messageType !== 'system') {
                 // Notifying all users who are part of the room, even if they're not connected to the room
                 const usersInRoom = await pubClient.sMembers(`room:${room}:users`);
                 for (const user of usersInRoom) {
-                    const userSocketId = await pubClient.get(`user:${user}:socket`);
-                    logger.info(`userSocketId for ${user} is ${userSocketId}`);
-                    if (userSocketId) {
-                        if(messageData.author !== user) {
-                            io.to(userSocketId).emit('new_message_notification', { room, message: messageData });
-                        } else {
-                            logger.info(`${messageData} not sent to ${user} as ${user} is the Author.`);
+                    const userSocketIds = await pubClient.sMembers(`user:${user}:sockets`);
+                    logger.info(`userSocketIds for ${user} are ${userSocketIds}`);
+                    if (userSocketIds && userSocketIds.length > 0) {
+                        for (const userSocketId of userSocketIds) {
+                            if (messageData.author !== user) {
+                                io.to(userSocketId).emit('new_message_notification', { room, message: messageData });
+                            } else {
+                                logger.info(`${messageData} not sent to ${user} as ${user} is the Author.`);
+                            }
                         }
                     }
                 }
-            }
+            }*/
         } catch (error) {
             logger.error('Error sending message:', error);
             throw error;
