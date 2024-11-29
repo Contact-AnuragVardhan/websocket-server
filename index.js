@@ -258,7 +258,7 @@ const io = new Server(server, {
                     logger.info(`User disconnected: ${socket.id}`);
                 }
                 else {
-                    logger.warn(`In disconnect Socket username not set for socket ID ${socket.id}`);
+                    logger.info(`In disconnect Socket username not set for socket ID ${socket.id}`);
                 }
             });
             
