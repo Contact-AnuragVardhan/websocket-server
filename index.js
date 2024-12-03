@@ -20,7 +20,7 @@ app.use(
 const server = http.createServer(app);
 
 const pubClient = redis.createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    url: process.env.REDIS_URL || 'rediss://red-ct2idc5svqrc738bfef0:M9oWgWDMRXA3ds4n1GReuNlUuo3Pmwjy@oregon-redis.render.com:6379',
 });
 const subClient = pubClient.duplicate();
 
@@ -352,8 +352,13 @@ const getUserRooms = async (username, socket) => {
         const rooms = await pubClient.sMembers(`user:${username}:rooms`);
         const userRooms = await Promise.all(
             rooms.map(async (room) => {
-                const latestMessage = await getMessageNotificationForRoom(username, room);
-                return { room, latestMessage };
+                try {
+                    const latestMessage = await getMessageNotificationForRoom(username, room);
+                    return { room, latestMessage };
+                }
+                catch(error) {
+                    return { room, latestMessage: null };
+                }
             })
         );
         socket.emit('user_rooms', userRooms);
@@ -371,10 +376,58 @@ const getUserRooms = async (username, socket) => {
     }
 };
 
-const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
+/*const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
+    const startTime = Date.now();
     try {
         handleSocketInitialization(socket, username);
+
+        const initTime = Date.now();
+        logger.info(`Time taken for handleSocketInitialization: ${initTime - startTime}ms`);
+
+        // Calculate start and end using negative indices
+        const start = - (page * pageSize);
+        const end = - ((page - 1) * pageSize + 1);
+
+        logger.info(`Fetching messages for room ${room} from ${start} to ${end}`);
+
+        // Adjust for the case when start is zero
+        const adjustedStart = start === 0 ? null : start;
+        const storedMessages = await pubClient.lRange(`room:${room}:messages`, adjustedStart, end);
+
+        const fetchMessagesTime = Date.now();
+        logger.info(`Time taken for fetching messages: ${fetchMessagesTime - initTime}ms`);
+
+        const messages = storedMessages.map((msg) => JSON.parse(msg));
+
+        if (messages && messages.length > 0) {
+            const lastMessage = messages[0]; // Since we are fetching from the end, the first message is the latest
+            await pubClient.set(`user:${socket.username}:room:${room}:lastReadMessage`, lastMessage.time);
+        }
+
+        const finalProcessTime = Date.now();
+        logger.info(`Time taken for processing and updating last read message: ${finalProcessTime - fetchMessagesTime}ms`);
+
+        logger.info(`Fetched messages from room ${room}`);
+
+        return messages;
+    } catch (error) {
+        logger.error('Error getting room messages:', error);
+        throw error;
+    }
+};*/
+
+
+const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
+    const startTime = Date.now();
+    try {
+        handleSocketInitialization(socket, username);
+
+        const initTime = Date.now();
+        logger.info(`Time taken for handleSocketInitialization: ${initTime - startTime}ms`);
+
         const totalMessages = await pubClient.lLen(`room:${room}:messages`);
+        const lenTime = Date.now();
+        logger.info(`Time taken for fetching totalMessages: ${lenTime - initTime}ms`);
 
         const end = totalMessages - (page - 1) * pageSize - 1;
         const start = Math.max(0, end - pageSize + 1);
@@ -385,15 +438,21 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
         );
 
         if (start > end || end < 0) {
+            const earlyExitTime = Date.now();
+            logger.info(`Early exit due to invalid range. Total time taken: ${earlyExitTime - startTime}ms`);
             return [];
         }
 
         const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
+        const fetchMessagesTime = Date.now();
+        logger.info(`Time taken for fetching messages: ${fetchMessagesTime - lenTime}ms`);
         const messages = storedMessages.map((msg) => JSON.parse(msg));
         if (messages && messages.length > 0 && messages[messages.length - 1]) {
             const lastMessage = messages[messages.length - 1];
             await pubClient.set(`user:${socket.username}:room:${room}:lastReadMessage`, lastMessage.time);
         }
+        const finalProcessTime = Date.now();
+        logger.info(`Time taken for processing and updating last read message: ${finalProcessTime - fetchMessagesTime}ms`);
         logger.info(
             `Start Message is ${JSON.stringify(messages[0])} and end Message is ${JSON.stringify(
                 messages[messages.length - 1]
@@ -488,15 +547,17 @@ const getMessageNotificationForRoom = async (username, room) => {
     const lastReadMessageId = await pubClient.get(`user:${username}:room:${room}:lastReadMessage`);
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
     const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
-    const latestMessage = JSON.parse(latestMessageData);
-
-    if (lastReadMessageId && isValidDate(lastReadMessageId) && latestMessage) {
-        const latestMessageTime = new Date(latestMessage.time);
-        const lastReadMessageIdTime = new Date(lastReadMessageId);
-        if (latestMessageTime > lastReadMessageIdTime) {
-            return latestMessage;
+    if(latestMessageData) {
+        const latestMessage = JSON.parse(latestMessageData);
+        if (lastReadMessageId && isValidDate(lastReadMessageId) && latestMessage) {
+            const latestMessageTime = new Date(latestMessage.time);
+            const lastReadMessageIdTime = new Date(lastReadMessageId);
+            if (latestMessageTime > lastReadMessageIdTime) {
+                return latestMessage;
+            }
         }
     }
+    
     return null;
 };
 
