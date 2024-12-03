@@ -61,6 +61,7 @@ const io = new Server(server, {
             logger.info(`User connected: ${socket.id}`);
 
             socket.on('user_connected', async ({ username }) => {
+                validateUser(username, 'user_connected');
                 handleSocketInitialization(socket, username);
 
                 await pubClient.sAdd(`user:${username}:sockets`, socket.id);
@@ -87,6 +88,7 @@ const io = new Server(server, {
 
             socket.on('create_room', async ({ room, username }) => {
                 try {
+                    validateUser(username, 'create_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
                         await createRoom(room, username, socket, 'create_room');
@@ -103,6 +105,7 @@ const io = new Server(server, {
 
             socket.on('join_room', async ({ room, username }) => {
                 try {
+                    validateUser(username, 'join_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
                         await addUserInRoom(room, username, socket, 'join_room');
@@ -120,6 +123,7 @@ const io = new Server(server, {
                 const room = data.room;
                 const username = data.author;
 
+                validateUser(username, 'send_message');
                 handleSocketInitialization(socket, username, room);
             
                 pubClient.exists(`room:${room}:users`)
@@ -161,6 +165,7 @@ const io = new Server(server, {
             });*/
 
             socket.on('get_user_rooms', ({ username }) => {
+                validateUser(username, 'get_user_rooms');
                 handleSocketInitialization(socket, username);
                 getUserRooms(username, socket);
             });
@@ -170,6 +175,7 @@ const io = new Server(server, {
             });
 
             socket.on('get_room_messages', ({ room, username }) => {
+                validateUser(username, 'get_room_messages');
                 getRoomMessages(room, -1, -1, socket, username)
                     .then((messages) => {
                         socket.emit('message_history', { room, messages });
@@ -180,6 +186,7 @@ const io = new Server(server, {
             });
             
             socket.on('get_room_messages_pages', ({ room, page = 1, pageSize = 50, username }) => {
+                validateUser(username, 'get_room_messages_pages');
                 getRoomMessages(room, page, pageSize, socket, username)
                     .then((messages) => {
                         socket.emit('message_history_pages', { room, messages, page, pageSize });
@@ -212,6 +219,7 @@ const io = new Server(server, {
             });
 
             socket.on('update_last_read_message', ({ room, username }) => {
+                validateUser(username, 'update_last_read_message');
                 logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
                 handleSocketInitialization(socket, username);
                 
@@ -295,7 +303,8 @@ const createRoom = async (room, username, socket, fromEvent) => {
 
         // Emit to all clients that a new room has been created
         io.emit('room_created', { room });
-        addDefaultMessage(room, username, `${room} created by ${username}`);
+        const message = username ? `${room} created by ${username}` : `${room} created`;
+        addDefaultMessage(room, username, message);
 
         const users = await pubClient.sMembers(`room:${room}:users`);
         io.to(room).emit('user_list', { room, users });
@@ -507,4 +516,10 @@ const isValidDate = (dateString) => {
     const date = new Date(dateString);
     const retVal = !isNaN(date.getTime());
     return retVal;
+};
+
+const validateUser = (username, method) => {
+    if(!username) {
+        logger.error(`******** Username is empty. We might have issue with websocket in method ${method} ********`);
+    }
 };
