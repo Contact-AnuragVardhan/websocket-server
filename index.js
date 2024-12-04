@@ -99,7 +99,7 @@ const io = new Server(server, {
                     socket.emit('joined_room', { room });
                 } catch (error) {
                     logger.error('Error creating room:', error);
-                    socket.emit('error_message', { message: 'Failed to create room.' });
+                    socket.emit('error_message', { message: 'Failed to create room.', error });
                 }
             });
 
@@ -115,7 +115,7 @@ const io = new Server(server, {
                     socket.emit('joined_room', { room });
                 } catch (error) {
                     logger.error('Error joining room:', error);
-                    socket.emit('error_message', { message: 'Failed to join room.' });
+                    socket.emit('error_message', { message: 'Failed to join room.', error });
                 }
             });
 
@@ -139,7 +139,7 @@ const io = new Server(server, {
                     })
                     .catch((error) => {
                         logger.error('Error sending message:', error);
-                        socket.emit('error_message', { message: 'Failed to send message.' });
+                        socket.emit('error_message', { message: 'Failed to send message.', error });
                     });
             });
 
@@ -177,22 +177,22 @@ const io = new Server(server, {
             socket.on('get_room_messages', ({ room, username }) => {
                 validateUser(username, 'get_room_messages');
                 getRoomMessages(room, -1, -1, socket, username)
-                    .then((messages) => {
-                        socket.emit('message_history', { room, messages });
+                    .then(({messages, totalMessages}) => {
+                        socket.emit('message_history', { room, messages, totalMessages });
                     })
                     .catch((error) => {
-                        socket.emit('error_message', { message: 'Failed to get room messages.' });
+                        socket.emit('error_message', { message: 'Failed to get room messages.', error });
                     });
             });
             
             socket.on('get_room_messages_pages', ({ room, page = 1, pageSize = 50, username }) => {
                 validateUser(username, 'get_room_messages_pages');
                 getRoomMessages(room, page, pageSize, socket, username)
-                    .then((messages) => {
-                        socket.emit('message_history_pages', { room, messages, page, pageSize });
+                    .then(({messages, totalMessages}) => {
+                        socket.emit('message_history_pages', { room, messages, page, pageSize, totalMessages });
                     })
                     .catch((error) => {
-                        socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
+                        socket.emit('error_message', { message: 'Failed to get room messages.', error });
                     });
             });
 
@@ -343,7 +343,7 @@ const getAllUserInRooms = async (room, socket) => {
         socket.emit('users_in_room', { room, users });
     } catch (error) {
         logger.error(`Error getting users in room ${room}:`, error);
-        socket.emit('error_message', { message: `Failed to get users in room ${room}` });
+        socket.emit('error_message', { message: `Failed to get users in room ${room}`, error });
     }
 };
 
@@ -372,7 +372,7 @@ const getUserRooms = async (username, socket) => {
         socket.emit('user_rooms', userRooms);*/
     } catch (error) {
         logger.error('Error getting user rooms:', error);
-        socket.emit('error_message', { message: 'Failed to get user rooms.' });
+        socket.emit('error_message', { message: 'Failed to get user rooms.', error });
     }
 };
 
@@ -458,7 +458,7 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
                 messages[messages.length - 1]
             )}`
         );
-        return messages;
+        return {messages, totalMessages};
     } catch (error) {
         logger.error('Error getting room messages:', error);
         throw error;
@@ -472,7 +472,7 @@ const getAllRooms = async (socket) => {
         return roomNames;
     } catch (error) {
         logger.error('Error getting all room list:', error);
-        socket.emit('error_message', { message: 'Failed to get all room list.' });
+        socket.emit('error_message', { message: 'Failed to get all room list.', error });
     }
     return null;
 };
