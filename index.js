@@ -20,7 +20,7 @@ app.use(
 const server = http.createServer(app);
 
 const pubClient = redis.createClient({
-    url: process.env.REDIS_URL || 'rediss://red-ct2idc5svqrc738bfef0:M9oWgWDMRXA3ds4n1GReuNlUuo3Pmwjy@oregon-redis.render.com:6379',
+    url: process.env.REDIS_URL || 'redis://localhost:6379'//'rediss://red-ct2idc5svqrc738bfef0:M9oWgWDMRXA3ds4n1GReuNlUuo3Pmwjy@oregon-redis.render.com:6379',
 });
 const subClient = pubClient.duplicate();
 
@@ -86,12 +86,12 @@ const io = new Server(server, {
                 }
             });
 
-            socket.on('create_room', async ({ room, username }) => {
+            socket.on('create_room', async ({ room, username, initialMessages }) => {
                 try {
                     validateUser(username, 'create_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
-                        await createRoom(room, username, socket, 'create_room');
+                        await createRoom(room, username, initialMessages, socket, 'create_room');
                     } else {
                         logger.info(`Room ${room} already exists`);
                         await addUserInRoom(room, username, socket, 'create_room');
@@ -110,7 +110,7 @@ const io = new Server(server, {
                     if (roomExists) {
                         await addUserInRoom(room, username, socket, 'join_room');
                     } else {
-                        await createRoom(room, username, socket, 'join_room');
+                        await createRoom(room, username, null, socket, 'join_room');
                     }
                     socket.emit('joined_room', { room });
                 } catch (error) {
@@ -129,7 +129,7 @@ const io = new Server(server, {
                 pubClient.exists(`room:${room}:users`)
                     .then((roomExists) => {
                         if (!roomExists) {
-                            return createRoom(room, username, socket, 'send_message');
+                            return createRoom(room, username, null, socket, 'send_message');
                         } else {
                             return addUserInRoom(room, username, socket, 'send_message');
                         }
@@ -153,7 +153,7 @@ const io = new Server(server, {
 
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
-                        await createRoom(room, username, socket, 'send_message');
+                        await createRoom(room, username, null, socket, 'send_message');
                     } else {
                         await addUserInRoom(room, username, socket, 'send_message');
                     }
@@ -290,7 +290,7 @@ const io = new Server(server, {
     }
 })();
 
-const createRoom = async (room, username, socket, fromEvent) => {
+const createRoom = async (room, username, initialMessages, socket, fromEvent) => {
     handleSocketInitialization(socket, username, room);
     const roomExists = await pubClient.exists(`room:${room}:users`);
     if (!roomExists) {
@@ -305,6 +305,13 @@ const createRoom = async (room, username, socket, fromEvent) => {
         io.emit('room_created', { room });
         const message = username ? `${room} created by ${username}` : `${room} created`;
         addDefaultMessage(room, username, message);
+
+        //add initial messages to the room
+        if(initialMessages && initialMessages.length > 0) {
+            initialMessages.forEach(message => {
+                addMessage(message, 'user');
+            }); 
+        }
 
         const users = await pubClient.sMembers(`room:${room}:users`);
         io.to(room).emit('user_list', { room, users });
