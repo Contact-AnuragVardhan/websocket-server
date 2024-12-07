@@ -237,22 +237,6 @@ const io = new Server(server, {
                         logger.error('Error updating last read message:', error);
                     });
             });
-            
-
-            /*socket.on('update_last_read_message', async ({ room, username }) => {
-                try {
-                    logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
-                    const totalMessages = await pubClient.lLen(`room:${room}:messages`);
-                    const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
-                    const latestMessage = JSON.parse(latestMessageData);
-
-                    if (latestMessage) {
-                        await pubClient.set(`user:${socket.username || username}:room:${room}:lastReadMessage`, latestMessage.time);
-                    }
-                } catch (error) {
-                    logger.error('Error updating last read message:', error);
-                }
-            });*/
 
             socket.on('disconnect', () => {
                 const username = socket.username;
@@ -383,47 +367,6 @@ const getUserRooms = async (username, socket) => {
     }
 };
 
-/*const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
-    const startTime = Date.now();
-    try {
-        handleSocketInitialization(socket, username);
-
-        const initTime = Date.now();
-        logger.info(`Time taken for handleSocketInitialization: ${initTime - startTime}ms`);
-
-        // Calculate start and end using negative indices
-        const start = - (page * pageSize);
-        const end = - ((page - 1) * pageSize + 1);
-
-        logger.info(`Fetching messages for room ${room} from ${start} to ${end}`);
-
-        // Adjust for the case when start is zero
-        const adjustedStart = start === 0 ? null : start;
-        const storedMessages = await pubClient.lRange(`room:${room}:messages`, adjustedStart, end);
-
-        const fetchMessagesTime = Date.now();
-        logger.info(`Time taken for fetching messages: ${fetchMessagesTime - initTime}ms`);
-
-        const messages = storedMessages.map((msg) => JSON.parse(msg));
-
-        if (messages && messages.length > 0) {
-            const lastMessage = messages[0]; // Since we are fetching from the end, the first message is the latest
-            await pubClient.set(`user:${socket.username}:room:${room}:lastReadMessage`, lastMessage.time);
-        }
-
-        const finalProcessTime = Date.now();
-        logger.info(`Time taken for processing and updating last read message: ${finalProcessTime - fetchMessagesTime}ms`);
-
-        logger.info(`Fetched messages from room ${room}`);
-
-        return messages;
-    } catch (error) {
-        logger.error('Error getting room messages:', error);
-        throw error;
-    }
-};*/
-
-
 const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
     const startTime = Date.now();
     try {
@@ -513,7 +456,7 @@ const addMessage = async (data, messageType) => {
             logger.info(`added message ${JSON.stringify(messageData)}`);
             io.to(room).emit('receive_message', messageData);
 
-            /*if (messageType !== 'system') {
+            if (messageType !== 'system') {
                 // Notifying all users who are part of the room, even if they're not connected to the room
                 const usersInRoom = await pubClient.sMembers(`room:${room}:users`);
                 for (const user of usersInRoom) {
@@ -529,7 +472,7 @@ const addMessage = async (data, messageType) => {
                         }
                     }
                 }
-            }*/
+            }
         } catch (error) {
             logger.error('Error sending message:', error);
             throw error;
