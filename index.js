@@ -223,13 +223,16 @@ const io = new Server(server, {
                 logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
                 handleSocketInitialization(socket, username);
                 
+                const uname = socket.username || username;
+                pubClient.set(`user:${uname}:room:${room}:lastReadTime`, (new Date()).getTime());
+                //keeping it for later like "watermark" or "read receipts" functionality
                 pubClient.lLen(`room:${room}:messages`)
                     .then((totalMessages) => {
                         return pubClient.lIndex(`room:${room}:messages`, totalMessages - 1)
                             .then((latestMessageData) => {
                                 const latestMessage = JSON.parse(latestMessageData);
                                 if (latestMessage) {
-                                    return pubClient.set(`user:${socket.username || username}:room:${room}:lastReadMessage`, latestMessage.time);
+                                    return pubClient.set(`user:${uname}:room:${room}:lastReadMessage`, JSON.stringify(latestMessage));
                                 }
                             });
                     })
@@ -396,10 +399,12 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
         const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
         const fetchMessagesTime = Date.now();
         logger.info(`Time taken for fetching messages: ${fetchMessagesTime - lenTime}ms`);
+        const uname = socket.username || username;
+        pubClient.set(`user:${uname}:room:${room}:lastReadTime`, (new Date()).getTime());
         const messages = storedMessages.map((msg) => JSON.parse(msg));
         if (messages && messages.length > 0 && messages[messages.length - 1]) {
             const lastMessage = messages[messages.length - 1];
-            await pubClient.set(`user:${socket.username}:room:${room}:lastReadMessage`, lastMessage.time);
+            await pubClient.set(`user:${uname}:room:${room}:lastReadMessage`, JSON.stringify(lastMessage));
         }
         const finalProcessTime = Date.now();
         logger.info(`Time taken for processing and updating last read message: ${finalProcessTime - fetchMessagesTime}ms`);
@@ -494,15 +499,19 @@ const addDefaultMessage = (room, username, message) => {
 };
 
 const getMessageNotificationForRoom = async (username, room) => {
-    const lastReadMessageId = await pubClient.get(`user:${username}:room:${room}:lastReadMessage`);
+    //const lastReadMessageId = await pubClient.get(`user:${username}:room:${room}:lastReadMessage`);
+    let lastReadTimeString = await pubClient.get(`user:${username}:room:${room}:lastReadTime`);
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
     const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
-    if(latestMessageData) {
+    if(latestMessageData && lastReadTimeString) {
         const latestMessage = JSON.parse(latestMessageData);
-        if (lastReadMessageId && isValidDate(lastReadMessageId) && latestMessage) {
+        if (typeof lastReadTimeString === 'string') {
+            lastReadTimeString = Number(lastReadTimeString);
+        }
+        if (lastReadTimeString && isValidDate(lastReadTimeString) && latestMessage) {
             const latestMessageTime = new Date(latestMessage.time);
-            const lastReadMessageIdTime = new Date(lastReadMessageId);
-            if (latestMessageTime > lastReadMessageIdTime) {
+            const lastReadTime = new Date(lastReadTimeString);
+            if (latestMessageTime > lastReadTime) {
                 return latestMessage;
             }
         }
