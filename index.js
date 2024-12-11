@@ -31,7 +31,6 @@ const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST'],
-        transports: ['websocket']
     },
     maxHttpBufferSize: 1e8, // 100 MB limit
 });
