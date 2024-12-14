@@ -1,4 +1,4 @@
-//index.js 
+// index.js
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -10,6 +10,9 @@ const retry = require('async-retry');
 const logger = require('./logger');
 
 const app = express();
+
+app.use(express.json());
+
 app.use(
     cors({
         origin: '*',
@@ -37,6 +40,9 @@ const io = new Server(server, {
 
 //const isMobileDebug = false;
 
+// A separate structure for managing call rooms and participants
+const callRooms = new Map();
+
 (async () => {
     try {
         await pubClient.connect();
@@ -46,16 +52,16 @@ const io = new Server(server, {
         io.adapter(createAdapter(pubClient, subClient));
 
         const PORT = process.env.PORT || 3001;
-        /*if(isMobileDebug) {
-            server.listen(PORT, '0.0.0.0', () => {
-                logger.info(`WebSocket server running on port ${PORT}`);
-            });
-        } else {*/
+        const isMobileDebug = true;
+        if(isMobileDebug) {
+                    server.listen(PORT, '0.0.0.0', () => {
+                        logger.info(`WebSocket server running on port ${PORT}`);
+                    });
+                } else {
         server.listen(PORT, () => {
             logger.info(`WebSocket server running on port ${PORT}`);
         });
-        //}
-
+        }
 
         io.on('connection', (socket) => {
             logger.info(`User connected: ${socket.id}`);
@@ -69,20 +75,9 @@ const io = new Server(server, {
 
                 // Rejoin all rooms the user was part of
                 const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
-
                 for (const room of userRooms) {
                     handleSocketInitialization(socket, username, room);
                     logger.info(`User ${username} rejoined room ${room}`);
-
-                    /*const latestMessage = await getMessageNotificationForRoom(username, room);
-                    if (latestMessage) {
-                        if(latestMessage.author !== username) {
-                            socket.emit('new_message_notification', { room, message: latestMessage });
-                        }
-                        else {
-                            logger.info(`${latestMessage} not sent to ${username} as ${username} is the Author.`);
-                        }
-                    }*/
                 }
             });
 
@@ -125,7 +120,7 @@ const io = new Server(server, {
 
                 validateUser(username, 'send_message');
                 handleSocketInitialization(socket, username, room);
-            
+
                 pubClient.exists(`room:${room}:users`)
                     .then((roomExists) => {
                         if (!roomExists) {
@@ -143,27 +138,6 @@ const io = new Server(server, {
                     });
             });
 
-            /*socket.on('send_message', async (data) => {
-                const room = data.room;
-                const username = data.author;
-
-                try {
-
-                    //socket.emit('joined_room', { room });
-
-                    const roomExists = await pubClient.exists(`room:${room}:users`);
-                    if (!roomExists) {
-                        await createRoom(room, username, null, socket, 'send_message');
-                    } else {
-                        await addUserInRoom(room, username, socket, 'send_message');
-                    }
-                    addMessage(data, 'user');
-                } catch (error) {
-                    logger.error('Error sending message:', error);
-                    socket.emit('error_message', { message: 'Failed to send message.' });
-                }
-            });*/
-
             socket.on('get_user_rooms', ({ username }) => {
                 validateUser(username, 'get_user_rooms');
                 handleSocketInitialization(socket, username);
@@ -177,42 +151,24 @@ const io = new Server(server, {
             socket.on('get_room_messages', ({ room, username }) => {
                 validateUser(username, 'get_room_messages');
                 getRoomMessages(room, -1, -1, socket, username)
-                    .then(({messages, totalMessages}) => {
+                    .then(({ messages, totalMessages }) => {
                         socket.emit('message_history', { room, messages, totalMessages });
                     })
                     .catch((error) => {
                         socket.emit('error_message', { message: 'Failed to get room messages.', error });
                     });
             });
-            
+
             socket.on('get_room_messages_pages', ({ room, page = 1, pageSize = 50, username }) => {
                 validateUser(username, 'get_room_messages_pages');
                 getRoomMessages(room, page, pageSize, socket, username)
-                    .then(({messages, totalMessages}) => {
+                    .then(({ messages, totalMessages }) => {
                         socket.emit('message_history_pages', { room, messages, page, pageSize, totalMessages });
                     })
                     .catch((error) => {
                         socket.emit('error_message', { message: 'Failed to get room messages.', error });
                     });
             });
-
-            /*socket.on('get_room_messages', async ({ room }) => {
-                try {
-                    const messages = await getRoomMessages(room, -1, -1, socket);
-                    socket.emit('message_history', { room, messages });
-                } catch (error) {
-                    socket.emit('error_message', { message: 'Failed to get room messages.' });
-                }
-            });
-
-            socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50 }) => {
-                try {
-                    const messages = await getRoomMessages(room, page, pageSize, socket);
-                    socket.emit('message_history_pages', { room, messages, page, pageSize });
-                } catch (error) {
-                    socket.emit('error_message_pages', { message: 'Failed to get room messages.' });
-                }
-            });*/
 
             socket.on('get_all_rooms', () => {
                 getAllRooms(socket);
@@ -222,7 +178,7 @@ const io = new Server(server, {
                 validateUser(username, 'update_last_read_message');
                 logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
                 handleSocketInitialization(socket, username);
-                
+
                 const uname = socket.username || username;
                 pubClient.set(`user:${uname}:room:${room}:lastReadTime`, (new Date()).getTime());
                 //keeping it for later like "watermark" or "read receipts" functionality
@@ -241,9 +197,52 @@ const io = new Server(server, {
                     });
             });
 
-            socket.on('disconnect', () => {
+            // ---------------------
+            // Audio call functionality
+            // ---------------------
+
+            socket.on('audio-create-room', async (roomId) => {
+                const hostId = await pubClient.get(`callRoom:${roomId}:host`);
+                if (!hostId) {
+                    await pubClient.set(`callRoom:${roomId}:host`, socket.id);
+                    await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+                    socket.join(roomId);
+                    socket.emit('audio-room-created', roomId);
+                    // rooms this socket is in
+                    await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
+                } else {
+                    socket.emit('error', 'Room already exists');
+                }
+            });
+
+            socket.on('audio-join-room', async (roomId) => {
+                const hostId = await pubClient.get(`callRoom:${roomId}:host`);
+                if (hostId) {
+                    await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+                    socket.join(roomId);
+                    socket.emit('audio-room-joined', roomId);
+                    socket.to(roomId).emit('audio-user-joined', socket.id);
+                    await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
+                } else {
+                    socket.emit('error', 'Room not found');
+                }
+            });
+
+            socket.on('offer', (offer, roomId, targetId) => {
+                socket.to(targetId).emit('audio-offer', offer, socket.id);
+            });
+
+            socket.on('answer', (answer, roomId, targetId) => {
+                socket.to(targetId).emit('audio-answer', answer, socket.id);
+            });
+
+            socket.on('ice-candidate', (candidate, roomId, targetId) => {
+                socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
+            });
+
+            socket.on('disconnect', async () => {
                 const username = socket.username;
-            
+
                 if (username) {
                     logger.info(`SocketId ${socket.id} is getting deleted for username ${username}`);
                     pubClient.sRem(`user:${username}:sockets`, socket.id)
@@ -251,27 +250,26 @@ const io = new Server(server, {
                             logger.error('Error during disconnect:', error);
                         });
                     logger.info(`User disconnected: ${socket.id}`);
-                }
-                else {
+                } else {
                     logger.info(`In disconnect Socket username not set for socket ID ${socket.id}`);
                 }
-            });
-            
 
-            /*socket.on('disconnect', async () => {
-                const username = socket.username;
-
-                if (username) {
-                    try {
-                        logger.info(`SocketId is ${socket.id} is getting deleted for username ${username}`);
-                        await pubClient.sRem(`user:${username}:sockets`, socket.id);
-                    } catch (error) {
-                        logger.error('Error during disconnect:', error);
+                // Handle call user disconnection
+                const userCallRooms = await pubClient.sMembers(`socket:${socket.id}:callRooms`);
+                for (const callRoomId of userCallRooms) {
+                    await pubClient.sRem(`callRoom:${callRoomId}:participants`, socket.id);
+                    const size = await pubClient.sCard(`callRoom:${callRoomId}:participants`);
+                    io.to(callRoomId).emit('audio-user-left', socket.id);
+                    if (size === 0) {
+                        // clean up the empty room
+                        await pubClient.del(`callRoom:${callRoomId}:host`);
+                        await pubClient.del(`callRoom:${callRoomId}:participants`);
                     }
                 }
-                logger.info(`User disconnected: ${socket.id}`);
-            });*/
+                await pubClient.del(`socket:${socket.id}:callRooms`);
+            });
         });
+
     } catch (error) {
         logger.error('Error connecting to Redis:', error);
     }
@@ -282,22 +280,21 @@ const createRoom = async (room, username, initialMessages, socket, fromEvent) =>
     const roomExists = await pubClient.exists(`room:${room}:users`);
     if (!roomExists) {
         logger.info(`Creating Room ${room} in ${fromEvent} event`);
-        //socket.join(room);
-        //socket.username = username;
         await pubClient.sAdd(`room:${room}:users`, username);
         await pubClient.sAdd(`user:${username}:rooms`, room);
         await pubClient.sAdd('rooms:set', room);
 
         // Emit to all clients that a new room has been created
         io.emit('room_created', { room });
-        const message = username ? `${room} created by ${username}` : `${room} created`;
+        const roomName = getRoomNameFromId(room);
+        const message = username ? `${roomName} created by ${username}` : `${roomName} created`;
         addDefaultMessage(room, username, message);
 
         //add initial messages to the room
-        if(initialMessages && initialMessages.length > 0) {
-            initialMessages.forEach(message => {
-                addMessage(message, 'user');
-            }); 
+        if (initialMessages && initialMessages.length > 0) {
+            for (const msg of initialMessages) {
+                addMessage(msg, 'user');
+            }
         }
 
         const users = await pubClient.sMembers(`room:${room}:users`);
@@ -312,14 +309,12 @@ const createRoom = async (room, username, initialMessages, socket, fromEvent) =>
 
 const addUserInRoom = async (room, username, socket, fromEvent) => {
     handleSocketInitialization(socket, username, room);
-    
+
     const userInRoom = await pubClient.sIsMember(`room:${room}:users`, username);
     if (!userInRoom) {
         logger.info(`User ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
         await pubClient.sAdd(`room:${room}:users`, username);
         await pubClient.sAdd(`user:${username}:rooms`, room);
-        //socket.join(room);
-        //socket.username = username;
         addDefaultMessage(room, username, `${username} joined the ${room}`);
 
         const users = await pubClient.sMembers(`room:${room}:users`);
@@ -350,7 +345,7 @@ const getUserRooms = async (username, socket) => {
                     const latestMessage = await getMessageNotificationForRoom(username, room);
                     return { room, latestMessage };
                 }
-                catch(error) {
+                catch (error) {
                     return { room, latestMessage: null };
                 }
             })
@@ -413,7 +408,7 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
                 messages[messages.length - 1]
             )}`
         );
-        return {messages, totalMessages};
+        return { messages, totalMessages };
     } catch (error) {
         logger.error('Error getting room messages:', error);
         throw error;
@@ -499,11 +494,10 @@ const addDefaultMessage = (room, username, message) => {
 };
 
 const getMessageNotificationForRoom = async (username, room) => {
-    //const lastReadMessageId = await pubClient.get(`user:${username}:room:${room}:lastReadMessage`);
     let lastReadTimeString = await pubClient.get(`user:${username}:room:${room}:lastReadTime`);
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
     const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
-    if(latestMessageData && lastReadTimeString) {
+    if (latestMessageData && lastReadTimeString) {
         const latestMessage = JSON.parse(latestMessageData);
         if (typeof lastReadTimeString === 'string') {
             lastReadTimeString = Number(lastReadTimeString);
@@ -516,13 +510,12 @@ const getMessageNotificationForRoom = async (username, room) => {
             }
         }
     }
-    
     return null;
 };
 
 const handleSocketInitialization = (socket, username, room) => {
-    if(socket) {
-        if(room) {
+    if (socket) {
+        if (room) {
             // Since socket.join(room) is idempotent we can always use socket.join(room) without checking it
             socket.join(room);
         }
@@ -530,7 +523,16 @@ const handleSocketInitialization = (socket, username, room) => {
             socket.username = username;
         }
     }
-}
+};
+
+const getRoomNameFromId = (roomId) => {
+    const delimiter = '-';
+    if (roomId.includes(delimiter)) {
+        const parts = roomId.split(delimiter);
+        return parts.slice(0, -1).join(delimiter);
+    }
+    return roomId;
+};
 
 const isValidDate = (dateString) => {
     const date = new Date(dateString);
@@ -539,7 +541,43 @@ const isValidDate = (dateString) => {
 };
 
 const validateUser = (username, method) => {
-    if(!username) {
+    if (!username) {
         logger.error(`******** Username is empty. We might have issue with websocket in method ${method} ********`);
     }
 };
+
+app.post('/api/subscriptions', async (req, res) => {
+    const { roomId, subscription } = req.body;
+
+    if (!roomId || !subscription) {
+        return res.status(400).json({ error: 'roomId and subscription are required.' });
+    }
+
+    try {
+        const key = `room:${roomId}:subscriptions`;
+        // Store subscription by endpoint to ensure uniqueness
+        await pubClient.hSet(key, subscription.endpoint, JSON.stringify(subscription));
+        return res.json({ message: 'Subscription stored successfully!' });
+    } catch (error) {
+        console.error('Error storing subscription:', error);
+        return res.status(500).json({ error: 'Failed to store subscription.' });
+    }
+});
+
+// Retrieve subscriptions for a room
+app.get('/api/subscriptions', async (req, res) => {
+    const { roomId } = req.query;
+    if (!roomId) {
+        return res.status(400).json({ error: 'roomId is required.' });
+    }
+
+    try {
+        const key = `room:${roomId}:subscriptions`;
+        const subsHash = await pubClient.hGetAll(key);
+        const subscriptions = Object.values(subsHash).map(val => JSON.parse(val));
+        return res.json(subscriptions);
+    } catch (error) {
+        console.error('Error fetching subscriptions:', error);
+        return res.status(500).json({ error: 'Failed to fetch subscriptions.' });
+    }
+});
