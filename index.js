@@ -40,8 +40,6 @@ const io = new Server(server, {
 
 //const isMobileDebug = false;
 
-// A separate structure for managing call rooms and participants
-const callRooms = new Map();
 
 (async () => {
     try {
@@ -53,15 +51,15 @@ const callRooms = new Map();
 
         const PORT = process.env.PORT || 3001;
         const isMobileDebug = true;
-        if(isMobileDebug) {
+        /*if(isMobileDebug) {
                     server.listen(PORT, '0.0.0.0', () => {
                         logger.info(`WebSocket server running on port ${PORT}`);
                     });
-                } else {
+                } else {*/
         server.listen(PORT, () => {
             logger.info(`WebSocket server running on port ${PORT}`);
         });
-        }
+        //}
 
         io.on('connection', (socket) => {
             logger.info(`User connected: ${socket.id}`);
@@ -202,30 +200,11 @@ const callRooms = new Map();
             // ---------------------
 
             socket.on('audio-create-room', async (roomId) => {
-                const hostId = await pubClient.get(`callRoom:${roomId}:host`);
-                if (!hostId) {
-                    await pubClient.set(`callRoom:${roomId}:host`, socket.id);
-                    await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
-                    socket.join(roomId);
-                    socket.emit('audio-room-created', roomId);
-                    // rooms this socket is in
-                    await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
-                } else {
-                    socket.emit('error', 'Room already exists');
-                }
+                await audioCreateRoom(roomId, socket);
             });
 
             socket.on('audio-join-room', async (roomId) => {
-                const hostId = await pubClient.get(`callRoom:${roomId}:host`);
-                if (hostId) {
-                    await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
-                    socket.join(roomId);
-                    socket.emit('audio-room-joined', roomId);
-                    socket.to(roomId).emit('audio-user-joined', socket.id);
-                    await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
-                } else {
-                    socket.emit('error', 'Room not found');
-                }
+                await audioJoinRoom(roomId, socket);
             });
 
             socket.on('offer', (offer, roomId, targetId) => {
@@ -238,6 +217,33 @@ const callRooms = new Map();
 
             socket.on('ice-candidate', (candidate, roomId, targetId) => {
                 socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
+            });
+
+            socket.on('leave-room',async (roomId) => {
+                try {
+                    await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
+            
+                    const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
+            
+                    io.to(roomId).emit('audio-user-left', socket.id);
+            
+                    if (size === 0) {
+                        await pubClient.del(`callRoom:${roomId}:host`);
+                        await pubClient.del(`callRoom:${roomId}:participants`);
+                    }
+
+                    await pubClient.sRem(`socket:${socket.id}:callRooms`, roomId);
+            
+                    socket.leave(roomId);
+            
+                    // Optionally, send a confirmation to the client
+                    socket.emit('audio-left-room', roomId);
+            
+                    console.log(`Socket ${socket.id} left room ${roomId}`);
+                } catch (error) {
+                    console.error(`Error leaving room ${roomId}:`, error);
+                    socket.emit('error', { message: `Failed to leave room ${roomId}`, error });
+                }
             });
 
             socket.on('disconnect', async () => {
@@ -511,6 +517,34 @@ const getMessageNotificationForRoom = async (username, room) => {
         }
     }
     return null;
+};
+
+const audioCreateRoom = async (roomId, socket) => {
+    const hostId = await pubClient.get(`callRoom:${roomId}:host`);
+    if (!hostId) {
+        await pubClient.set(`callRoom:${roomId}:host`, socket.id);
+        await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+        socket.join(roomId);
+        socket.emit('audio-room-created', roomId);
+        // rooms this socket is in
+        await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
+    } else {
+        audioJoinRoom(roomId, socket);
+        //socket.emit('error', 'Room already exists');
+    }
+};
+
+const audioJoinRoom = async (roomId, socket) => {
+    const hostId = await pubClient.get(`callRoom:${roomId}:host`);
+    if (hostId) {
+        await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+        socket.join(roomId);
+        socket.emit('audio-room-joined', roomId);
+        socket.to(roomId).emit('audio-user-joined', socket.id);
+        await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
+    } else {
+        socket.emit('error', 'Room not found');
+    }
 };
 
 const handleSocketInitialization = (socket, username, room) => {
