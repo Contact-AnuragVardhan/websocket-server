@@ -525,12 +525,17 @@ const audioCreateRoom = async (roomId, socket) => {
         await pubClient.set(`callRoom:${roomId}:host`, socket.id);
         await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
         socket.join(roomId);
+
+        // Get current participants (only host at this time)
+        const participants = await pubClient.sMembers(`callRoom:${roomId}:participants`);
+        // Send participants (excluding the current user)
+        socket.emit('audio-participants', participants.filter(p => p !== socket.id));
+
         socket.emit('audio-room-created', roomId);
-        // rooms this socket is in
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
-        audioJoinRoom(roomId, socket);
-        //socket.emit('error', 'Room already exists');
+        // If room already exists, treat this as a join
+        await audioJoinRoom(roomId, socket);
     }
 };
 
@@ -539,8 +544,15 @@ const audioJoinRoom = async (roomId, socket) => {
     if (hostId) {
         await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
         socket.join(roomId);
+
+        // Get all current participants
+        const participants = await pubClient.sMembers(`callRoom:${roomId}:participants`);
+        // Send participant list to the newly joined user (excluding themselves)
+        socket.emit('audio-participants', participants.filter(p => p !== socket.id));
+
         socket.emit('audio-room-joined', roomId);
         socket.to(roomId).emit('audio-user-joined', socket.id);
+
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
         socket.emit('error', 'Room not found');
