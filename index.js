@@ -23,7 +23,8 @@ app.use(
 const server = http.createServer(app);
 
 const pubClient = redis.createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'//'rediss://red-ct2idc5svqrc738bfef0:M9oWgWDMRXA3ds4n1GReuNlUuo3Pmwjy@oregon-redis.render.com:6379',
+    url: process.env.REDIS_URL || 'redis://localhost:6379'
+    //url: 'rediss://red-ct2idc5svqrc738bfef0:M9oWgWDMRXA3ds4n1GReuNlUuo3Pmwjy@oregon-redis.render.com:6379',
 });
 const subClient = pubClient.duplicate();
 
@@ -298,7 +299,8 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
         logger.info(`User ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
         await pubClient.sAdd(`room:${room}:users`, username);
         await pubClient.sAdd(`user:${username}:rooms`, room);
-        addDefaultMessage(room, username, `${username} joined the ${room}`);
+        const roomName = getRoomNameFromId(room);
+        addDefaultMessage(room, username, `${username} joined the ${roomName}`);
 
         const users = await pubClient.sMembers(`room:${room}:users`);
         io.to(room).emit('user_list', { room, users });
