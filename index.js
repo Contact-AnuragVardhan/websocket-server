@@ -220,30 +220,7 @@ const io = new Server(server, {
             });
 
             socket.on('leave-room',async (roomId) => {
-                try {
-                    await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
-            
-                    const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
-            
-                    io.to(roomId).emit('audio-user-left', socket.id);
-            
-                    if (size === 0) {
-                        await pubClient.del(`callRoom:${roomId}:host`);
-                        await pubClient.del(`callRoom:${roomId}:participants`);
-                    }
-
-                    await pubClient.sRem(`socket:${socket.id}:callRooms`, roomId);
-            
-                    socket.leave(roomId);
-            
-                    // Optionally, send a confirmation to the client
-                    socket.emit('audio-left-room', roomId);
-            
-                    console.log(`Socket ${socket.id} left room ${roomId}`);
-                } catch (error) {
-                    console.error(`Error leaving room ${roomId}:`, error);
-                    socket.emit('error', { message: `Failed to leave room ${roomId}`, error });
-                }
+                audioLeaveRoom(roomId, socket);
             });
 
             socket.on('disconnect', async () => {
@@ -532,6 +509,10 @@ const audioCreateRoom = async (roomId, socket) => {
         socket.emit('audio-participants', participants.filter(p => p !== socket.id));
 
         socket.emit('audio-room-created', roomId);
+        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', { 
+            roomId: roomId,
+            socketId: socket.id
+        });
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
         // If room already exists, treat this as a join
@@ -553,10 +534,66 @@ const audioJoinRoom = async (roomId, socket) => {
         socket.emit('audio-room-joined', roomId);
         socket.to(roomId).emit('audio-user-joined', socket.id);
 
+        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', { 
+            roomId: roomId,
+            socketId: socket.id
+        });
+
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
         socket.emit('error', 'Room not found');
     }
+};
+
+const audioLeaveRoom = async (roomId, socket) => {
+    try {
+        await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
+
+        const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
+
+        io.to(roomId).emit('audio-user-left', socket.id);
+
+        if (size === 0) {
+            await pubClient.del(`callRoom:${roomId}:host`);
+            await pubClient.del(`callRoom:${roomId}:participants`);
+            handleNotificationToAllUserInRoom(roomId, 'audio-call-disconnected', { 
+                roomId: roomId,
+                socketId: socket.id
+            });
+        }
+
+        await pubClient.sRem(`socket:${socket.id}:callRooms`, roomId);
+
+        socket.leave(roomId);
+
+        // Optionally, send a confirmation to the client
+        socket.emit('audio-left-room', roomId);
+
+        console.log(`Socket ${socket.id} left room ${roomId}`);
+    } catch (error) {
+        console.error(`Error leaving room ${roomId}:`, error);
+        socket.emit('error', { message: `Failed to leave room ${roomId}`, error });
+    }
+};
+
+const handleNotificationToAllUserInRoom = (roomId, notificationType, notificationParams) => {
+    pubClient.sMembers(`room:${roomId}:users`)
+        .then(usersInRoom => {
+            const userPromises = usersInRoom.map(user => {
+                return pubClient.sMembers(`user:${user}:sockets`)
+                    .then(userSocketIds => {
+                        if (userSocketIds && userSocketIds.length > 0) {
+                            userSocketIds.forEach(userSocketId => {
+                                io.to(userSocketId).emit(notificationType, { ...notificationParams, user: user});
+                            });
+                        }
+                    });
+            });
+            return Promise.all(userPromises);
+        })
+        .catch(err => {
+            console.error("Error handling notifications:", err);
+        });
 };
 
 const handleSocketInitialization = (socket, username, room) => {
