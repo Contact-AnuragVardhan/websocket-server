@@ -221,7 +221,11 @@ const io = new Server(server, {
             });
 
             socket.on('leave-room',async (roomId) => {
-                audioLeaveRoom(roomId, socket);
+                await audioLeaveRoom(roomId, socket);
+            });
+
+            socket.on('leave-all-audio-rooms', async () => {
+                await audioLeaveAllRooms(socket);
             });
 
             socket.on('disconnect', async () => {
@@ -239,18 +243,7 @@ const io = new Server(server, {
                 }
 
                 // Handle call user disconnection
-                const userCallRooms = await pubClient.sMembers(`socket:${socket.id}:callRooms`);
-                for (const callRoomId of userCallRooms) {
-                    await pubClient.sRem(`callRoom:${callRoomId}:participants`, socket.id);
-                    const size = await pubClient.sCard(`callRoom:${callRoomId}:participants`);
-                    io.to(callRoomId).emit('audio-user-left', socket.id);
-                    if (size === 0) {
-                        // clean up the empty room
-                        await pubClient.del(`callRoom:${callRoomId}:host`);
-                        await pubClient.del(`callRoom:${callRoomId}:participants`);
-                    }
-                }
-                await pubClient.del(`socket:${socket.id}:callRooms`);
+                await audioLeaveAllRooms(socket);
             });
         });
 
@@ -549,33 +542,55 @@ const audioJoinRoom = async (roomId, socket) => {
 
 const audioLeaveRoom = async (roomId, socket) => {
     try {
-        await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
+        if(roomId) {
+            await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
 
-        const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
+            const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
 
-        io.to(roomId).emit('audio-user-left', socket.id);
+            io.to(roomId).emit('audio-user-left', socket.id);
 
-        if (size === 0) {
-            await pubClient.del(`callRoom:${roomId}:host`);
-            await pubClient.del(`callRoom:${roomId}:participants`);
-            handleNotificationToAllUserInRoom(roomId, 'audio-call-disconnected', { 
-                roomId: roomId,
-                socketId: socket.id
-            });
+            if (size === 0) {
+                await pubClient.del(`callRoom:${roomId}:host`);
+                await pubClient.del(`callRoom:${roomId}:participants`);
+                handleNotificationToAllUserInRoom(roomId, 'audio-call-disconnected', { 
+                    roomId: roomId,
+                    socketId: socket.id
+                });
+            }
+
+            await pubClient.sRem(`socket:${socket.id}:callRooms`, roomId);
+
+            socket.leave(roomId);
+
+            // Optionally, send a confirmation to the client
+            socket.emit('audio-left-room', roomId);
+
+            console.log(`Socket ${socket.id} left room ${roomId}`);
         }
-
-        await pubClient.sRem(`socket:${socket.id}:callRooms`, roomId);
-
-        socket.leave(roomId);
-
-        // Optionally, send a confirmation to the client
-        socket.emit('audio-left-room', roomId);
-
-        console.log(`Socket ${socket.id} left room ${roomId}`);
+        
     } catch (error) {
         console.error(`Error leaving room ${roomId}:`, error);
         socket.emit('error', { message: `Failed to leave room ${roomId}`, error });
     }
+};
+
+const audioLeaveAllRooms = async (socket) => {
+    const userCallRooms = await pubClient.sMembers(`socket:${socket.id}:callRooms`);
+    for (const callRoomId of userCallRooms) {
+        await pubClient.sRem(`callRoom:${callRoomId}:participants`, socket.id);
+        const size = await pubClient.sCard(`callRoom:${callRoomId}:participants`);
+        io.to(callRoomId).emit('audio-user-left', socket.id);
+        if (size === 0) {
+            // clean up the empty room
+            await pubClient.del(`callRoom:${callRoomId}:host`);
+            await pubClient.del(`callRoom:${callRoomId}:participants`);
+            handleNotificationToAllUserInRoom(callRoomId, 'audio-call-disconnected', { 
+                roomId: callRoomId,
+                socketId: socket.id
+            });
+        }
+    }
+    await pubClient.del(`socket:${socket.id}:callRooms`);
 };
 
 const handleNotificationToAllUserInRoom = (roomId, notificationType, notificationParams) => {
