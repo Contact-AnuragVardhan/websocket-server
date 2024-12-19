@@ -6,6 +6,8 @@ const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const redis = require('redis');
 const retry = require('async-retry');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const logger = require('./logger');
 
@@ -52,15 +54,15 @@ const io = new Server(server, {
 
         const PORT = process.env.PORT || 3001;
         const isMobileDebug = true;
-        /*if(isMobileDebug) {
-                    server.listen(PORT, '0.0.0.0', () => {
-                        logger.info(`WebSocket server running on port ${PORT}`);
-                    });
-                } else {*/
-        server.listen(PORT, () => {
-            logger.info(`WebSocket server running on port ${PORT}`);
-        });
-        //}
+        if (isMobileDebug) {
+            server.listen(PORT, '0.0.0.0', () => {
+                logger.info(`WebSocket server running on port ${PORT}`);
+            });
+        } else {
+            server.listen(PORT, () => {
+                logger.info(`WebSocket server running on port ${PORT}`);
+            });
+        }
 
         io.on('connection', (socket) => {
             logger.info(`User connected: ${socket.id}`);
@@ -220,7 +222,7 @@ const io = new Server(server, {
                 socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
             });
 
-            socket.on('leave-room',async (roomId) => {
+            socket.on('leave-room', async (roomId) => {
                 await audioLeaveRoom(roomId, socket);
             });
 
@@ -504,7 +506,7 @@ const audioCreateRoom = async (roomId, socket) => {
         socket.emit('audio-participants', participants.filter(p => p !== socket.id));
 
         socket.emit('audio-room-created', roomId);
-        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', { 
+        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
             roomId: roomId,
             socketId: socket.id
         });
@@ -529,7 +531,7 @@ const audioJoinRoom = async (roomId, socket) => {
         socket.emit('audio-room-joined', roomId);
         socket.to(roomId).emit('audio-user-joined', socket.id);
 
-        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', { 
+        handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
             roomId: roomId,
             socketId: socket.id
         });
@@ -542,7 +544,7 @@ const audioJoinRoom = async (roomId, socket) => {
 
 const audioLeaveRoom = async (roomId, socket) => {
     try {
-        if(roomId) {
+        if (roomId) {
             await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
 
             const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
@@ -552,7 +554,7 @@ const audioLeaveRoom = async (roomId, socket) => {
             if (size === 0) {
                 await pubClient.del(`callRoom:${roomId}:host`);
                 await pubClient.del(`callRoom:${roomId}:participants`);
-                handleNotificationToAllUserInRoom(roomId, 'audio-call-disconnected', { 
+                handleNotificationToAllUserInRoom(roomId, 'audio-call-disconnected', {
                     roomId: roomId,
                     socketId: socket.id
                 });
@@ -567,7 +569,7 @@ const audioLeaveRoom = async (roomId, socket) => {
 
             console.log(`Socket ${socket.id} left room ${roomId}`);
         }
-        
+
     } catch (error) {
         console.error(`Error leaving room ${roomId}:`, error);
         socket.emit('error', { message: `Failed to leave room ${roomId}`, error });
@@ -584,7 +586,7 @@ const audioLeaveAllRooms = async (socket) => {
             // clean up the empty room
             await pubClient.del(`callRoom:${callRoomId}:host`);
             await pubClient.del(`callRoom:${callRoomId}:participants`);
-            handleNotificationToAllUserInRoom(callRoomId, 'audio-call-disconnected', { 
+            handleNotificationToAllUserInRoom(callRoomId, 'audio-call-disconnected', {
                 roomId: callRoomId,
                 socketId: socket.id
             });
@@ -601,7 +603,7 @@ const handleNotificationToAllUserInRoom = (roomId, notificationType, notificatio
                     .then(userSocketIds => {
                         if (userSocketIds && userSocketIds.length > 0) {
                             userSocketIds.forEach(userSocketId => {
-                                io.to(userSocketId).emit(notificationType, { ...notificationParams, user: user});
+                                io.to(userSocketId).emit(notificationType, { ...notificationParams, user: user });
                             });
                         }
                     });
@@ -646,6 +648,65 @@ const validateUser = (username, method) => {
     }
 };
 
+/*************************other route section *****************************************/
+
+const extractMetadata = async (url, messageId) => {
+    logger.info(`Info is being extracted from ${url} for messageId ${messageId}`);
+    const cacheKey = `metadata:${messageId}-${url}`;
+    const cachedData = await pubClient.get(cacheKey);
+    if (cachedData) {
+        logger.info(`Cache hit for ${url}`);
+        return JSON.parse(cachedData);
+    }
+
+    logger.info(`Cache miss for ${url}. Fetching metadata...`);
+    const response = await axios.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        },
+        timeout: 5000
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Initialize metadata object
+    const metadata = {
+        url: url,
+        title: '',
+        description: '',
+        image: '',
+        favicon: ''
+    };
+
+    //console.log('1',$('meta[property="og:title"]').attr('content'));
+    //console.log('2',$('title').text() );
+    metadata.title = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
+
+    metadata.description = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || '';
+
+    metadata.image = $('meta[property="og:image"]').attr('content') || '';
+
+    const favicon = $('link[rel*="icon"]').attr('href');
+    if (favicon) {
+        let faviconUrl = favicon;
+        if (!faviconUrl.startsWith('http')) {
+            if (faviconUrl.startsWith('//')) {
+                faviconUrl = 'https:' + faviconUrl;
+            } else {
+                faviconUrl = new URL(faviconUrl, url).href;
+            }
+        }
+        metadata.favicon = faviconUrl;
+    }
+
+    await pubClient.set(cacheKey, JSON.stringify(metadata));
+    await pubClient.expire(cacheKey, 31536000);  // 365 days in seconds
+
+    return metadata;
+
+
+};
+
 app.post('/api/subscriptions', async (req, res) => {
     const { roomId, subscription } = req.body;
 
@@ -679,5 +740,20 @@ app.get('/api/subscriptions', async (req, res) => {
     } catch (error) {
         console.error('Error fetching subscriptions:', error);
         return res.status(500).json({ error: 'Failed to fetch subscriptions.' });
+    }
+});
+
+app.post('/api/linkPreview', async (req, res) => {
+    const data = req.body;
+    if (!data || !data.url || !data.messageId) {
+        return res.status(400).json({ error: 'URL and Message Id is required' });
+    }
+
+    const {url, messageId} = data;
+    try {
+        const metadata = await extractMetadata(url, messageId);
+        return res.json(metadata);
+    } catch (error) {
+        return res.status(500).json({ error: 'Failed to fetch metadata.' });
     }
 });
