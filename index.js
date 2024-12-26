@@ -435,8 +435,8 @@ const addMessage = async (data, messageType) => {
             logger.info(`Message from ${username} in room ${room}:`, data.message);
             logger.info(`added message ${JSON.stringify(messageData)}`);
             io.to(room).emit('receive_message', messageData);
-
             if (messageType !== 'system') {
+                io.emit('new_message_notification_all', { room, message: messageData });
                 // Notifying all users who are part of the room, even if they're not connected to the room
                 const usersInRoom = await pubClient.sMembers(`room:${room}:users`);
                 for (const user of usersInRoom) {
