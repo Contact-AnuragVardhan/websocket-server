@@ -322,8 +322,8 @@ const getUserRooms = async (username, socket) => {
         const userRooms = await Promise.all(
             rooms.map(async (room) => {
                 try {
-                    const latestMessage = await getMessageNotificationForRoom(username, room);
-                    return { room, latestMessage };
+                    const unreadMessages = await getMessageNotificationForRoom(username, room);
+                    return { room, latestMessages: unreadMessages };
                 }
                 catch (error) {
                     return { room, latestMessage: null };
@@ -474,20 +474,33 @@ const addDefaultMessage = (room, username, message) => {
 };
 
 const getMessageNotificationForRoom = async (username, room) => {
-    let lastReadTimeString = await pubClient.get(`user:${username}:room:${room}:lastReadTime`);
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
-    const latestMessageData = await pubClient.lIndex(`room:${room}:messages`, totalMessages - 1);
-    if (latestMessageData && lastReadTimeString) {
-        const latestMessage = JSON.parse(latestMessageData);
+    if (totalMessages === 0) {
+        return null;
+    }
+    let lastReadTimeString = await pubClient.get(`user:${username}:room:${room}:lastReadTime`);
+    if (lastReadTimeString) {
         if (typeof lastReadTimeString === 'string') {
             lastReadTimeString = Number(lastReadTimeString);
         }
-        if (lastReadTimeString && isValidDate(lastReadTimeString) && latestMessage) {
-            const latestMessageTime = new Date(latestMessage.time);
-            const lastReadTime = new Date(lastReadTimeString);
-            if (latestMessageTime > lastReadTime) {
-                return latestMessage;
+        const lastReadTime = new Date(lastReadTimeString);
+        const storedMessages = await pubClient.lRange(`room:${room}:messages`, 0, -1);
+        if (storedMessages && storedMessages.length > 0) {
+            const unreadMessages = [];
+            for (let i = storedMessages.length - 1; i >= 0; i--) {
+                const msg = JSON.parse(storedMessages[i]);
+                if (!msg?.time) {
+                    continue;
+                }
+                const msgTime = new Date(msg.time);
+                if (msgTime > lastReadTime) {
+                    // Because we're going from newest to oldest to keep final array in ascending time order
+                    unreadMessages.unshift(msg);
+                } else {
+                    break;
+                }
             }
+            return unreadMessages;
         }
     }
     return null;
@@ -749,7 +762,7 @@ app.post('/api/linkPreview', async (req, res) => {
         return res.status(400).json({ error: 'URL and Message Id is required' });
     }
 
-    const {url, messageId} = data;
+    const { url, messageId } = data;
     try {
         const metadata = await extractMetadata(url, messageId);
         return res.json(metadata);
