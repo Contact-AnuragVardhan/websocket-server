@@ -368,7 +368,7 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
         if (start > end || end < 0) {
             const earlyExitTime = Date.now();
             logger.info(`Early exit due to invalid range. Total time taken: ${earlyExitTime - startTime}ms`);
-            return [];
+            return {messages: [], totalMessages};
         }
 
         const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
