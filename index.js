@@ -323,10 +323,12 @@ const getUserRooms = async (username, socket) => {
             rooms.map(async (room) => {
                 try {
                     const unreadMessages = await getMessageNotificationForRoom(username, room);
-                    return { room, latestMessages: unreadMessages };
+                    const lastMessage = await getLastMessageForRoom(room); 
+                    return { room, latestMessages: unreadMessages, lastMessage };
                 }
                 catch (error) {
-                    return { room, latestMessage: null };
+                    logger.error(`Could not room details of ${room}`, error);
+                    return { room, latestMessage: null, lastMessage: null };
                 }
             })
         );
@@ -472,6 +474,14 @@ const addDefaultMessage = (room, username, message) => {
     };
     addMessage(objMessage, 'system');
 };
+
+const getLastMessageForRoom = async (room) => {
+    const messageJson = await pubClient.lIndex(`room:${room}:messages`, -1);
+    if (messageJson === null) {
+        return null;
+    }
+    return JSON.parse(messageJson);
+}
 
 const getMessageNotificationForRoom = async (username, room) => {
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
