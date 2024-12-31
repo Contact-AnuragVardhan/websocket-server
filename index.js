@@ -43,6 +43,27 @@ const io = new Server(server, {
 
 //const isMobileDebug = false;
 
+// new code: store userId -> username
+async function storeUserIdAndUsername(userId, username) {
+    if (!userId || !username) return;
+    try {
+        await pubClient.set(`userId:${userId}:username`, username);
+    } catch (error) {
+        logger.error('Error storing userId <-> username', error);
+    }
+}
+
+// new code: get username from userId
+async function getUsernameFromUserId(userId) {
+    if (!userId) return null;
+    try {
+        const uname = await pubClient.get(`userId:${userId}:username`);
+        return uname;
+    } catch (error) {
+        logger.error('Error getting username from userId:', error);
+        return null;
+    }
+}
 
 (async () => {
     try {
@@ -67,30 +88,36 @@ const io = new Server(server, {
         io.on('connection', (socket) => {
             logger.info(`User connected: ${socket.id}`);
 
-            socket.on('user_connected', async ({ username }) => {
-                validateUser(username, 'user_connected');
-                handleSocketInitialization(socket, username);
+            socket.on('user_connected', async ({ userId, username }) => {
+                // new code: store userId <-> username
+                storeUserIdAndUsername(userId, username);
 
-                await pubClient.sAdd(`user:${username}:sockets`, socket.id);
-                logger.info(`New socketId is ${socket.id} for username ${username}`);
+                validateUser(userId, username, 'user_connected');
+                handleSocketInitialization(socket, userId, username, username);
+
+                // new code: track sockets by userId
+                await pubClient.sAdd(`userId:${userId}:sockets`, socket.id);
+                logger.info(`New socketId is ${socket.id} for userId ${userId}, username ${username}`);
 
                 // Rejoin all rooms the user was part of
-                const userRooms = await pubClient.sMembers(`user:${username}:rooms`);
+                const userRooms = await pubClient.sMembers(`userId:${userId}:rooms`);
                 for (const room of userRooms) {
-                    handleSocketInitialization(socket, username, room);
-                    logger.info(`User ${username} rejoined room ${room}`);
+                    handleSocketInitialization(socket, userId, username, room);
+                    logger.info(`UserId ${userId}, username ${username} rejoined room ${room}`);
                 }
             });
 
-            socket.on('create_room', async ({ room, username, initialMessages }) => {
+            socket.on('create_room', async ({ room, userId, username, initialMessages }) => {
                 try {
-                    validateUser(username, 'create_room');
+                    storeUserIdAndUsername(userId, username);
+
+                    validateUser(userId, username, 'create_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
-                        await createRoom(room, username, initialMessages, socket, 'create_room');
+                        await createRoom(room, userId, username, initialMessages, socket, 'create_room');
                     } else {
                         logger.info(`Room ${room} already exists`);
-                        await addUserInRoom(room, username, socket, 'create_room');
+                        await addUserInRoom(room, userId, username, socket, 'create_room');
                     }
                     socket.emit('joined_room', { room });
                 } catch (error) {
@@ -99,14 +126,16 @@ const io = new Server(server, {
                 }
             });
 
-            socket.on('join_room', async ({ room, username }) => {
+            socket.on('join_room', async ({ room, userId, username }) => {
                 try {
-                    validateUser(username, 'join_room');
+                    storeUserIdAndUsername(userId, username);
+
+                    validateUser(userId, username, 'join_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
-                        await addUserInRoom(room, username, socket, 'join_room');
+                        await addUserInRoom(room, userId, username, socket, 'join_room');
                     } else {
-                        await createRoom(room, username, null, socket, 'join_room');
+                        await createRoom(room, userId, username, null, socket, 'join_room');
                     }
                     socket.emit('joined_room', { room });
                 } catch (error) {
@@ -116,18 +145,21 @@ const io = new Server(server, {
             });
 
             socket.on('send_message', (data) => {
-                const room = data.room;
-                const username = data.author;
+                const { room, userId, author: username } = data;
+                // 'author' is the username for display
 
-                validateUser(username, 'send_message');
-                handleSocketInitialization(socket, username, room);
+                validateUser(userId, username, 'send_message');
+                handleSocketInitialization(socket, userId, username, room);
+
+                // new code: store userId -> username
+                storeUserIdAndUsername(userId, username);
 
                 pubClient.exists(`room:${room}:users`)
                     .then((roomExists) => {
                         if (!roomExists) {
-                            return createRoom(room, username, null, socket, 'send_message');
+                            return createRoom(room, userId, username, null, socket, 'send_message');
                         } else {
-                            return addUserInRoom(room, username, socket, 'send_message');
+                            return addUserInRoom(room, userId, username, socket, 'send_message');
                         }
                     })
                     .then(() => {
@@ -139,19 +171,23 @@ const io = new Server(server, {
                     });
             });
 
-            socket.on('get_user_rooms', ({ username }) => {
-                validateUser(username, 'get_user_rooms');
-                handleSocketInitialization(socket, username);
-                getUserRooms(username, socket);
+            socket.on('get_user_rooms', async ({ userId, username }) => {
+                storeUserIdAndUsername(userId, username);
+
+                validateUser(userId, username, 'get_user_rooms');
+                handleSocketInitialization(socket, userId, username, username);
+                getUserRooms(userId, socket);
             });
 
             socket.on('get_user_in_rooms', ({ room }) => {
                 getAllUserInRooms(room, socket);
             });
 
-            socket.on('get_room_messages', ({ room, username }) => {
-                validateUser(username, 'get_room_messages');
-                getRoomMessages(room, -1, -1, socket, username)
+            socket.on('get_room_messages', async ({ room, userId, username }) => {
+                storeUserIdAndUsername(userId, username);
+
+                validateUser(userId, username, 'get_room_messages');
+                getRoomMessages(room, -1, -1, socket, userId, username)
                     .then(({ messages, totalMessages }) => {
                         socket.emit('message_history', { room, messages, totalMessages });
                     })
@@ -160,9 +196,11 @@ const io = new Server(server, {
                     });
             });
 
-            socket.on('get_room_messages_pages', ({ room, page = 1, pageSize = 50, username }) => {
-                validateUser(username, 'get_room_messages_pages');
-                getRoomMessages(room, page, pageSize, socket, username)
+            socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50, userId, username }) => {
+                storeUserIdAndUsername(userId, username);
+
+                validateUser(userId, username, 'get_room_messages_pages');
+                getRoomMessages(room, page, pageSize, socket, userId, username)
                     .then(({ messages, totalMessages }) => {
                         socket.emit('message_history_pages', { room, messages, page, pageSize, totalMessages });
                     })
@@ -175,13 +213,15 @@ const io = new Server(server, {
                 getAllRooms(socket);
             });
 
-            socket.on('update_last_read_message', ({ room, username }) => {
-                validateUser(username, 'update_last_read_message');
-                logger.info(`Updating Last Read Message for Room ${room} for User ${username}`);
-                handleSocketInitialization(socket, username);
+            socket.on('update_last_read_message', ({ room, userId, username }) => {
+                storeUserIdAndUsername(userId, username);
 
-                const uname = socket.username || username;
-                pubClient.set(`user:${uname}:room:${room}:lastReadTime`, (new Date()).getTime());
+                validateUser(userId, username, 'update_last_read_message');
+                logger.info(`Updating Last Read Message for Room ${room} for userId ${userId}, username ${username}`);
+                handleSocketInitialization(socket, userId, username, username);
+
+                // new code: track last read for userId
+                pubClient.set(`userId:${userId}:room:${room}:lastReadTime`, (new Date()).getTime());
                 //keeping it for later like "watermark" or "read receipts" functionality
                 pubClient.lLen(`room:${room}:messages`)
                     .then((totalMessages) => {
@@ -189,7 +229,7 @@ const io = new Server(server, {
                             .then((latestMessageData) => {
                                 const latestMessage = JSON.parse(latestMessageData);
                                 if (latestMessage) {
-                                    return pubClient.set(`user:${uname}:room:${room}:lastReadMessage`, JSON.stringify(latestMessage));
+                                    return pubClient.set(`userId:${userId}:room:${room}:lastReadMessage`, JSON.stringify(latestMessage));
                                 }
                             });
                     })
@@ -231,17 +271,16 @@ const io = new Server(server, {
             });
 
             socket.on('disconnect', async () => {
-                const username = socket.username;
-
-                if (username) {
-                    logger.info(`SocketId ${socket.id} is getting deleted for username ${username}`);
-                    pubClient.sRem(`user:${username}:sockets`, socket.id)
+                const userId = socket.userId;
+                if (userId) {
+                    logger.info(`SocketId ${socket.id} is getting deleted for userId ${userId}`);
+                    pubClient.sRem(`userId:${userId}:sockets`, socket.id)
                         .catch((error) => {
                             logger.error('Error during disconnect:', error);
                         });
                     logger.info(`User disconnected: ${socket.id}`);
                 } else {
-                    logger.info(`In disconnect Socket username not set for socket ID ${socket.id}`);
+                    logger.info(`In disconnect Socket userId not set for socket ID ${socket.id}`);
                 }
 
                 // Handle call user disconnection
@@ -254,20 +293,23 @@ const io = new Server(server, {
     }
 })();
 
-const createRoom = async (room, username, initialMessages, socket, fromEvent) => {
-    handleSocketInitialization(socket, username, room);
+const createRoom = async (room, userId, username, initialMessages, socket, fromEvent) => {
+    handleSocketInitialization(socket, userId, username, room);
     const roomExists = await pubClient.exists(`room:${room}:users`);
     if (!roomExists) {
         logger.info(`Creating Room ${room} in ${fromEvent} event`);
-        await pubClient.sAdd(`room:${room}:users`, username);
-        await pubClient.sAdd(`user:${username}:rooms`, room);
+        // new code: store userId in the room set
+        await pubClient.sAdd(`room:${room}:users`, userId);
+        // new code: store room in userId's set
+        await pubClient.sAdd(`userId:${userId}:rooms`, room);
+
         await pubClient.sAdd('rooms:set', room);
 
         // Emit to all clients that a new room has been created
         io.emit('room_created', { room });
         const roomName = getRoomNameFromId(room);
         const message = username ? `${roomName} created by ${username}` : `${roomName} created`;
-        addDefaultMessage(room, username, message);
+        addDefaultMessage(room, userId, username, message);
 
         //add initial messages to the room
         if (initialMessages && initialMessages.length > 0) {
@@ -276,31 +318,32 @@ const createRoom = async (room, username, initialMessages, socket, fromEvent) =>
             }
         }
 
-        const users = await pubClient.sMembers(`room:${room}:users`);
-        io.to(room).emit('user_list', { room, users });
+        const userIds = await pubClient.sMembers(`room:${room}:users`);
+        io.to(room).emit('user_list', { room, users: userIds });
         getAllRooms(socket);
-        getUserRooms(username, socket);
-        logger.info(`Room ${room} created by ${username}`);
+        getUserRooms(userId, socket);
+        logger.info(`Room ${room} created by userId ${userId}, username ${username}`);
         return true;
     }
     return false;
 };
 
-const addUserInRoom = async (room, username, socket, fromEvent) => {
-    handleSocketInitialization(socket, username, room);
+const addUserInRoom = async (room, userId, username, socket, fromEvent) => {
+    handleSocketInitialization(socket, userId, username, room);
 
-    const userInRoom = await pubClient.sIsMember(`room:${room}:users`, username);
+    const userInRoom = await pubClient.sIsMember(`room:${room}:users`, userId);
     if (!userInRoom) {
-        logger.info(`User ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
-        await pubClient.sAdd(`room:${room}:users`, username);
-        await pubClient.sAdd(`user:${username}:rooms`, room);
-        const roomName = getRoomNameFromId(room);
-        addDefaultMessage(room, username, `${username} joined the ${roomName}`);
+        logger.info(`UserId ${userId}, username ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
+        await pubClient.sAdd(`room:${room}:users`, userId);
+        await pubClient.sAdd(`userId:${userId}:rooms`, room);
 
-        const users = await pubClient.sMembers(`room:${room}:users`);
-        io.to(room).emit('user_list', { room, users });
+        const roomName = getRoomNameFromId(room);
+        addDefaultMessage(room, userId, username, `${username} joined the ${roomName}`);
+
+        const userIds = await pubClient.sMembers(`room:${room}:users`);
+        io.to(room).emit('user_list', { room, users: userIds });
         getAllRooms(socket);
-        getUserRooms(username, socket);
+        getUserRooms(userId, socket);
         return true;
     }
     return false;
@@ -308,22 +351,22 @@ const addUserInRoom = async (room, username, socket, fromEvent) => {
 
 const getAllUserInRooms = async (room, socket) => {
     try {
-        const users = await pubClient.sMembers(`room:${room}:users`);
-        socket.emit('users_in_room', { room, users });
+        const userIds = await pubClient.sMembers(`room:${room}:users`);
+        socket.emit('users_in_room', { room, users: userIds });
     } catch (error) {
         logger.error(`Error getting users in room ${room}:`, error);
         socket.emit('error_message', { message: `Failed to get users in room ${room}`, error });
     }
 };
 
-const getUserRooms = async (username, socket) => {
+const getUserRooms = async (userId, socket) => {
     try {
-        const rooms = await pubClient.sMembers(`user:${username}:rooms`);
+        const rooms = await pubClient.sMembers(`userId:${userId}:rooms`);
         const userRooms = await Promise.all(
             rooms.map(async (room) => {
                 try {
-                    const unreadMessages = await getMessageNotificationForRoom(username, room);
-                    const lastMessage = await getLastMessageForRoom(room); 
+                    const unreadMessages = await getMessageNotificationForRoom(userId, room);
+                    const lastMessage = await getLastMessageForRoom(room);
                     return { room, latestMessages: unreadMessages, lastMessage };
                 }
                 catch (error) {
@@ -333,24 +376,16 @@ const getUserRooms = async (username, socket) => {
             })
         );
         socket.emit('user_rooms', userRooms);
-        /*const userRooms = [];
-        if (rooms.length > 0) {
-            for (const room of rooms) {
-                const latestMessage = await getMessageNotificationForRoom(username, room);
-                userRooms.push({ room, latestMessage });
-            }
-        }
-        socket.emit('user_rooms', userRooms);*/
     } catch (error) {
         logger.error('Error getting user rooms:', error);
         socket.emit('error_message', { message: 'Failed to get user rooms.', error });
     }
 };
 
-const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) => {
+const getRoomMessages = async (room, page = 1, pageSize = 50, socket, userId, username) => {
     const startTime = Date.now();
     try {
-        handleSocketInitialization(socket, username);
+        handleSocketInitialization(socket, userId, username, room);
 
         const initTime = Date.now();
         logger.info(`Time taken for handleSocketInitialization: ${initTime - startTime}ms`);
@@ -370,18 +405,19 @@ const getRoomMessages = async (room, page = 1, pageSize = 50, socket, username) 
         if (start > end || end < 0) {
             const earlyExitTime = Date.now();
             logger.info(`Early exit due to invalid range. Total time taken: ${earlyExitTime - startTime}ms`);
-            return {messages: [], totalMessages};
+            return { messages: [], totalMessages };
         }
 
         const storedMessages = await pubClient.lRange(`room:${room}:messages`, start, end);
         const fetchMessagesTime = Date.now();
         logger.info(`Time taken for fetching messages: ${fetchMessagesTime - lenTime}ms`);
-        const uname = socket.username || username;
-        pubClient.set(`user:${uname}:room:${room}:lastReadTime`, (new Date()).getTime());
+
+        pubClient.set(`userId:${userId}:room:${room}:lastReadTime`, (new Date()).getTime());
+
         const messages = storedMessages.map((msg) => JSON.parse(msg));
         if (messages && messages.length > 0 && messages[messages.length - 1]) {
             const lastMessage = messages[messages.length - 1];
-            await pubClient.set(`user:${uname}:room:${room}:lastReadMessage`, JSON.stringify(lastMessage));
+            await pubClient.set(`userId:${userId}:room:${room}:lastReadMessage`, JSON.stringify(lastMessage));
         }
         const finalProcessTime = Date.now();
         logger.info(`Time taken for processing and updating last read message: ${finalProcessTime - fetchMessagesTime}ms`);
@@ -414,10 +450,11 @@ const addMessage = async (data, messageType) => {
         try {
             const room = data.room;
             const username = data.author;
+            const userId = data.userId;
+
             // Store the message in Redis with expiration
             const messageData = {
                 ...data,
-                author: data.author || username,
                 messageType: data.messageType || messageType,
             };
 
@@ -434,23 +471,24 @@ const addMessage = async (data, messageType) => {
                 }
             );
 
-            logger.info(`Message from ${username} in room ${room}:`, data.message);
+            logger.info(`Message from userId ${userId}, username ${username} in room ${room}:`, data.message);
             logger.info(`added message ${JSON.stringify(messageData)}`);
             io.to(room).emit('receive_message', messageData);
             if (messageType !== 'system') {
                 io.emit('new_message_notification_all', { room, message: messageData });
                 // Notifying all users who are part of the room, even if they're not connected to the room
-                const usersInRoom = await pubClient.sMembers(`room:${room}:users`);
-                for (const user of usersInRoom) {
-                    const userSocketIds = await pubClient.sMembers(`user:${user}:sockets`);
-                    logger.info(`userSocketIds for ${user} are ${userSocketIds}`);
+                const userIds = await pubClient.sMembers(`room:${room}:users`);
+                for (const uid of userIds) {
+                    const userSocketIds = await pubClient.sMembers(`userId:${uid}:sockets`);
+                    logger.info(`userSocketIds for userId ${uid} are ${userSocketIds}`);
                     if (userSocketIds && userSocketIds.length > 0) {
-                        for (const userSocketId of userSocketIds) {
-                            if (messageData.author !== user) {
+                        // only notify if the author is different
+                        if (userId !== uid) {
+                            for (const userSocketId of userSocketIds) {
                                 io.to(userSocketId).emit('new_message_notification', { room, message: messageData });
-                            } else {
-                                logger.info(`${messageData} not sent to ${user} as ${user} is the Author.`);
                             }
+                        } else {
+                            logger.info(`${JSON.stringify(messageData)} not sent to userId ${uid} as userId is the Author.`);
                         }
                     }
                 }
@@ -462,15 +500,19 @@ const addMessage = async (data, messageType) => {
     }
 };
 
-const addDefaultMessage = (room, username, message) => {
+const addDefaultMessage = (room, userId, username, message) => {
     const date = new Date();
     const objMessage = {
         id: date.getTime(),
         room,
+        userId: 'Blackbox',
         author: 'Blackbox',
         message,
-        affectedUser: username,
+        affectedUserName: username,
+        affectedUserId: userId,
+
         time: date.toISOString(),
+        messageType: 'system',
     };
     addMessage(objMessage, 'system');
 };
@@ -481,14 +523,14 @@ const getLastMessageForRoom = async (room) => {
         return null;
     }
     return JSON.parse(messageJson);
-}
+};
 
-const getMessageNotificationForRoom = async (username, room) => {
+const getMessageNotificationForRoom = async (userId, room) => {
     const totalMessages = await pubClient.lLen(`room:${room}:messages`);
     if (totalMessages === 0) {
         return null;
     }
-    let lastReadTimeString = await pubClient.get(`user:${username}:room:${room}:lastReadTime`);
+    let lastReadTimeString = await pubClient.get(`userId:${userId}:room:${room}:lastReadTime`);
     if (lastReadTimeString) {
         if (typeof lastReadTimeString === 'string') {
             lastReadTimeString = Number(lastReadTimeString);
@@ -620,13 +662,13 @@ const audioLeaveAllRooms = async (socket) => {
 
 const handleNotificationToAllUserInRoom = (roomId, notificationType, notificationParams) => {
     pubClient.sMembers(`room:${roomId}:users`)
-        .then(usersInRoom => {
-            const userPromises = usersInRoom.map(user => {
-                return pubClient.sMembers(`user:${user}:sockets`)
+        .then(userIds => {
+            const userPromises = userIds.map(uId => {
+                return pubClient.sMembers(`userId:${uId}:sockets`)
                     .then(userSocketIds => {
                         if (userSocketIds && userSocketIds.length > 0) {
                             userSocketIds.forEach(userSocketId => {
-                                io.to(userSocketId).emit(notificationType, { ...notificationParams, user: user });
+                                io.to(userSocketId).emit(notificationType, { ...notificationParams, user: uId });
                             });
                         }
                     });
@@ -638,11 +680,14 @@ const handleNotificationToAllUserInRoom = (roomId, notificationType, notificatio
         });
 };
 
-const handleSocketInitialization = (socket, username, room) => {
+const handleSocketInitialization = (socket, userId, username, room) => {
     if (socket) {
         if (room) {
             // Since socket.join(room) is idempotent we can always use socket.join(room) without checking it
             socket.join(room);
+        }
+        if (userId) {
+            socket.userId = userId;
         }
         if (username) {
             socket.username = username;
@@ -665,9 +710,10 @@ const isValidDate = (dateString) => {
     return retVal;
 };
 
-const validateUser = (username, method) => {
-    if (!username) {
-        logger.error(`******** Username is empty. We might have issue with websocket in method ${method} ********`);
+const validateUser = (userId, username, method) => {
+    if (!userId) {
+        logger.error(`******** UserId is empty. We might have issue with websocket in method ${method} ********`);
+        //throw new Error('UserId is empty');
     }
 };
 
@@ -726,8 +772,6 @@ const extractMetadata = async (url, messageId) => {
     await pubClient.expire(cacheKey, 31536000);  // 365 days in seconds
 
     return metadata;
-
-
 };
 
 app.post('/api/subscriptions', async (req, res) => {
