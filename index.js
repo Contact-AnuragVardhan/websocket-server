@@ -243,26 +243,31 @@ async function getUsernameFromUserId(userId) {
             // ---------------------
 
             socket.on('audio-create-room', async (roomId) => {
+                logger.info("In Audio Create room ", roomId);
                 await audioCreateRoom(roomId, socket);
             });
 
             socket.on('audio-join-room', async (roomId) => {
+                logger.info("In Audio Join room ", roomId);
                 await audioJoinRoom(roomId, socket);
             });
 
             socket.on('offer', (offer, roomId, targetId) => {
+                logger.info("In Audio offer ", roomId);
                 socket.to(targetId).emit('audio-offer', offer, socket.id);
             });
 
             socket.on('answer', (answer, roomId, targetId) => {
+                logger.info("In Audio answer ", roomId);
                 socket.to(targetId).emit('audio-answer', answer, socket.id);
             });
 
             socket.on('ice-candidate', (candidate, roomId, targetId) => {
+                logger.info("In Audio ice-candidate ", roomId);
                 socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
             });
 
-            socket.on('leave-room', async (roomId) => {
+            socket.on('audio-leave-room', async (roomId) => {
                 await audioLeaveRoom(roomId, socket);
             });
 
