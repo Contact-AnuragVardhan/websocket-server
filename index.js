@@ -262,7 +262,7 @@ async function getUsernameFromUserId(userId) {
                 socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
             });
 
-            socket.on('leave-room', async (roomId) => {
+            socket.on('audio-leave-room', async (roomId) => {
                 await audioLeaveRoom(roomId, socket);
             });
 
