@@ -93,7 +93,7 @@ async function getUsernameFromUserId(userId) {
                 storeUserIdAndUsername(userId, username);
 
                 validateUser(userId, username, 'user_connected');
-                handleSocketInitialization(socket, userId, username, username);
+                handleSocketInitialization(socket, userId, username, null);
 
                 // new code: track sockets by userId
                 await pubClient.sAdd(`userId:${userId}:sockets`, socket.id);
@@ -175,7 +175,7 @@ async function getUsernameFromUserId(userId) {
                 storeUserIdAndUsername(userId, username);
 
                 validateUser(userId, username, 'get_user_rooms');
-                handleSocketInitialization(socket, userId, username, username);
+                handleSocketInitialization(socket, userId, username, null);
                 getUserRooms(userId, socket);
             });
 
@@ -218,7 +218,7 @@ async function getUsernameFromUserId(userId) {
 
                 validateUser(userId, username, 'update_last_read_message');
                 logger.info(`Updating Last Read Message for Room ${room} for userId ${userId}, username ${username}`);
-                handleSocketInitialization(socket, userId, username, username);
+                handleSocketInitialization(socket, userId, username, null);
 
                 // new code: track last read for userId
                 pubClient.set(`userId:${userId}:room:${room}:lastReadTime`, (new Date()).getTime());
