@@ -585,13 +585,17 @@ const audioCreateRoom = async (roomId, socket, userId) => {
     const hostId = await pubClient.get(`callRoom:${roomId}:host`);
     if (!hostId) {
         await pubClient.set(`callRoom:${roomId}:host`, socket.id);
-        await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+        await pubClient.sAdd(`callRoom:${roomId}:participants`, `${socket.id}||${userId}`);
         socket.join(roomId);
 
         // Get current participants (only host at this time)
-        const participants = await pubClient.sMembers(`callRoom:${roomId}:participants`);
+        const participantsRaw = await pubClient.sMembers(`callRoom:${roomId}:participants`);
+        const participants = participantsRaw.map(str => {
+            const [sId, uId] = str.split('||');
+            return { socketId: sId, userId: uId };
+        });
         // Send participants (excluding the current user)
-        socket.emit('audio-participants', participants.filter(p => p !== socket.id));
+        socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
 
         socket.emit('audio-room-created', roomId);
         handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
@@ -609,13 +613,18 @@ const audioCreateRoom = async (roomId, socket, userId) => {
 const audioJoinRoom = async (roomId, socket, userId) => {
     const hostId = await pubClient.get(`callRoom:${roomId}:host`);
     if (hostId) {
-        await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
+        await pubClient.sAdd(`callRoom:${roomId}:participants`, `${socket.id}||${userId}`);
         socket.join(roomId);
 
         // Get all current participants
-        const participants = await pubClient.sMembers(`callRoom:${roomId}:participants`);
-        // Send participant list to the newly joined user (excluding themselves)
-        socket.emit('audio-participants', participants.filter(p => p !== socket.id));
+        const participantsRaw = await pubClient.sMembers(`callRoom:${roomId}:participants`);
+        const participants = participantsRaw.map(str => {
+            const [sId, uId] = str.split('||');
+            return { socketId: sId, userId: uId };
+        });
+
+        // Send participant list to the newly joined user, excluding themselves
+        socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
 
         socket.emit('audio-room-joined', roomId);
         socket.to(roomId).emit('audio-user-joined', socket.id);
@@ -635,11 +644,11 @@ const audioJoinRoom = async (roomId, socket, userId) => {
 const audioLeaveRoom = async (roomId, socket) => {
     try {
         if (roomId) {
-            await pubClient.sRem(`callRoom:${roomId}:participants`, socket.id);
+            await pubClient.sRem(`callRoom:${roomId}:participants`, `${socket.id}||${socket.userId}`);
 
             const size = await pubClient.sCard(`callRoom:${roomId}:participants`);
 
-            io.to(roomId).emit('audio-user-left', socket.id);
+            io.to(roomId).emit('audio-user-left', { socketId: socket.id, userId: socket.userId });
 
             if (size === 0) {
                 await pubClient.del(`callRoom:${roomId}:host`);
