@@ -74,7 +74,7 @@ async function getUsernameFromUserId(userId) {
         io.adapter(createAdapter(pubClient, subClient));
 
         const PORT = process.env.PORT || 3001;
-        const isMobileDebug = true;
+        const isMobileDebug = false;
         if (isMobileDebug) {
             server.listen(PORT, '0.0.0.0', () => {
                 logger.info(`WebSocket server running on port ${PORT}`);
@@ -242,29 +242,47 @@ async function getUsernameFromUserId(userId) {
             // Audio call functionality
             // ---------------------
 
-            socket.on('audio-create-room', async (roomId) => {
-                logger.info("In Audio Create room ", roomId);
-                await audioCreateRoom(roomId, socket);
+            socket.on('audio-create-room', async (data) => {
+                const { roomId, userId } = data;
+                logger.info("In Audio Create room ", roomId, " for userId ", userId);
+                await audioCreateRoom(roomId, socket, userId);
             });
 
-            socket.on('audio-join-room', async (roomId) => {
-                logger.info("In Audio Join room ", roomId);
-                await audioJoinRoom(roomId, socket);
+            socket.on('audio-join-room', async (data) => {
+                const { roomIdToJoin, userId } = data;
+                logger.info("In Audio Join room ", roomIdToJoin, " for userId ", userId);
+                await audioJoinRoom(roomIdToJoin, socket, userId);
             });
 
-            socket.on('offer', (offer, roomId, targetId) => {
+            /*socket.on('offer', (offer, roomId, targetId) => {
                 logger.info("In Audio offer ", roomId);
                 socket.to(targetId).emit('audio-offer', offer, socket.id);
+            });*/
+
+            socket.on('offer', (offer, roomId, targetId, userId) => {
+                logger.info("In Audio offer for room ", roomId, " from userId ", userId, " from targetId ", targetId);
+                // pass userId so receiving client can filter
+                socket.to(targetId).emit('audio-offer', offer, socket.id, userId);
             });
 
-            socket.on('answer', (answer, roomId, targetId) => {
-                logger.info("In Audio answer ", roomId);
+            /*socket.on('answer', (answer, roomId, targetId) => {
+                logger.info("In Audio answer ", roomId, " from targetId ", targetId);
                 socket.to(targetId).emit('audio-answer', answer, socket.id);
+            });*/
+
+            socket.on('answer', (answer, roomId, targetId, userId) => {
+                logger.info("In Audio answer for room ", roomId, " from userId ", userId);
+                socket.to(targetId).emit('audio-answer', answer, socket.id, userId);
             });
 
-            socket.on('ice-candidate', (candidate, roomId, targetId) => {
-                logger.info("In Audio ice-candidate ", roomId);
+            /*socket.on('ice-candidate', (candidate, roomId, targetId) => {
+                logger.info("In Audio ice-candidate ", roomId, " from targetId ", targetId);
                 socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id);
+            });*/
+
+            socket.on('ice-candidate', (candidate, roomId, targetId, userId) => {
+                logger.info("In Audio ice-candidate for room ", roomId, " from userId ", userId);
+                socket.to(targetId).emit('audio-ice-candidate', candidate, socket.id, userId);
             });
 
             socket.on('audio-leave-room', async (roomId) => {
@@ -563,7 +581,7 @@ const getMessageNotificationForRoom = async (userId, room) => {
     return null;
 };
 
-const audioCreateRoom = async (roomId, socket) => {
+const audioCreateRoom = async (roomId, socket, userId) => {
     const hostId = await pubClient.get(`callRoom:${roomId}:host`);
     if (!hostId) {
         await pubClient.set(`callRoom:${roomId}:host`, socket.id);
@@ -578,16 +596,17 @@ const audioCreateRoom = async (roomId, socket) => {
         socket.emit('audio-room-created', roomId);
         handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
             roomId: roomId,
-            socketId: socket.id
+            socketId: socket.id,
+            userId
         });
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
         // If room already exists, treat this as a join
-        await audioJoinRoom(roomId, socket);
+        await audioJoinRoom(roomId, socket, userId);
     }
 };
 
-const audioJoinRoom = async (roomId, socket) => {
+const audioJoinRoom = async (roomId, socket, userId) => {
     const hostId = await pubClient.get(`callRoom:${roomId}:host`);
     if (hostId) {
         await pubClient.sAdd(`callRoom:${roomId}:participants`, socket.id);
@@ -603,7 +622,8 @@ const audioJoinRoom = async (roomId, socket) => {
 
         handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
             roomId: roomId,
-            socketId: socket.id
+            socketId: socket.id,
+            userId
         });
 
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
