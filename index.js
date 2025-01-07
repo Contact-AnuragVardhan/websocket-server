@@ -626,8 +626,8 @@ const audioJoinRoom = async (roomId, socket, userId) => {
         // Send participant list to the newly joined user, excluding themselves
         socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
 
-        socket.emit('audio-room-joined', roomId);
-        socket.to(roomId).emit('audio-user-joined', socket.id);
+        socket.emit('audio-room-joined', {roomId, socketId: socket.id, userId});
+        socket.to(roomId).emit('audio-user-joined', {socketId: socket.id, userId});
 
         handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
             roomId: roomId,
