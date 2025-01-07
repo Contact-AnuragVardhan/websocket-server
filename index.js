@@ -595,7 +595,8 @@ const audioCreateRoom = async (roomId, socket, userId) => {
             return { socketId: sId, userId: uId };
         });
         // Send participants (excluding the current user)
-        socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
+        //socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
+        socket.emit('audio-participants', participants);
 
         socket.emit('audio-room-created', roomId);
         handleNotificationToAllUserInRoom(roomId, 'audio-call-notification', {
@@ -624,7 +625,8 @@ const audioJoinRoom = async (roomId, socket, userId) => {
         });
 
         // Send participant list to the newly joined user, excluding themselves
-        socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
+        socket.emit('audio-participants', participants);
+        //socket.emit('audio-participants', participants.filter(p => p.socketId !== socket.id));
 
         socket.emit('audio-room-joined', {roomId, socketId: socket.id, userId});
         socket.to(roomId).emit('audio-user-joined', {socketId: socket.id, userId});
