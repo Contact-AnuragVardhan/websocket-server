@@ -293,6 +293,13 @@ async function getUsernameFromUserId(userId) {
                 await audioLeaveAllRooms(socket);
             });
 
+            //for raw pcm
+            socket.on('audio-raw-data-transmitted', (data) => {
+                const {frame, userId, roomId} = data;
+                logger.info("In audio-raw-data-transmitted for room ", roomId, " from userId ", userId);
+                io.to(roomId).emit('audio-raw-data-received', data);
+            });
+
             socket.on('disconnect', async () => {
                 const userId = socket.userId;
                 if (userId) {
