@@ -18,6 +18,9 @@ function logMessage(level, message, ...optionalParams) {
   if(level === 'error') {
     console.error(log.trim());
   }
+  else if(level === 'debug') {
+    console.debug(log.trim());
+  }
   else {
     console.log(log.trim());
   }
@@ -31,5 +34,6 @@ function logMessage(level, message, ...optionalParams) {
 
 module.exports = {
     info: (message, ...optionalParams) => logMessage('info', message, ...optionalParams),
+    debug: (message, ...optionalParams) => logMessage('debug', message, ...optionalParams),
     error: (message, ...optionalParams) => logMessage('error', message, ...optionalParams)
 };
