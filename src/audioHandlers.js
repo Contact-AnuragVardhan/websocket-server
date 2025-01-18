@@ -4,17 +4,20 @@ function setupAudioEvents(io, socket, pubClient) {
     socket.on('audio-create-room', async (data) => {
         const { roomId, userId } = data;
         logger.info("In Audio Create room ", roomId, " for userId ", userId);
+        storeUserInfoinSocket(socket, userId, null);
         await audioCreateRoom(io, roomId, socket, pubClient, userId);
     });
 
     socket.on('audio-join-room', async (data) => {
         const { roomIdToJoin, userId } = data;
         logger.info("In Audio Join room ", roomIdToJoin, " for userId ", userId);
+        storeUserInfoinSocket(socket, userId, null);
         await audioJoinRoom(io, roomIdToJoin, socket, pubClient, userId);
     });
 
     socket.on('audio-send-offer', (offer, roomId, targetId, userId) => {
         logger.info("In Audio offer for room ", roomId, " from userId ", userId, " from targetId ", targetId);
+        storeUserInfoinSocket(socket, userId, null);
         // pass userId so receiving client can filter
         socket.to(targetId).emit('audio-offer', offer, socket.id, userId);
     });
@@ -49,6 +52,17 @@ async function removeAudioEvents(io, pubClient, socket) {
     await audioLeaveAllRooms(io, pubClient, socket);
 }
 
+const storeUserInfoinSocket = (socket, userId, username) => {
+    if (socket) {
+        if (userId) {
+            socket.userId = userId;
+        }
+        if (username) {
+            socket.username = username;
+        }
+    }
+};
+
 const audioCreateRoom = async (io, roomId, socket, pubClient, userId) => {
     const hostId = await pubClient.get(`callRoom:${roomId}:host`);
     if (!hostId) {
@@ -67,6 +81,12 @@ const audioCreateRoom = async (io, roomId, socket, pubClient, userId) => {
 
         socket.emit('audio-room-created', roomId);
         handleNotificationToAllUserInRoom(io, pubClient, roomId, 'audio-call-notification', {
+            roomId: roomId,
+            socketId: socket.id,
+            userId
+        });
+        //for vscode
+        io.emit('audio-call-notification-all', {
             roomId: roomId,
             socketId: socket.id,
             userId
@@ -102,7 +122,11 @@ const audioJoinRoom = async (io, roomId, socket, pubClient, userId) => {
             socketId: socket.id,
             userId
         });
-
+        io.emit('audio-call-notification-all', {
+            roomId: roomId,
+            socketId: socket.id,
+            userId
+        });
         await pubClient.sAdd(`socket:${socket.id}:callRooms`, roomId);
     } else {
         socket.emit('error', 'Room not found');
@@ -118,10 +142,15 @@ const audioLeaveRoom = async (io, pubClient, roomId, socket) => {
 
             io.to(roomId).emit('audio-user-left', { socketId: socket.id, userId: socket.userId });
 
-            if (size === 0) {
+            if (size <= 1) {
                 await pubClient.del(`callRoom:${roomId}:host`);
                 await pubClient.del(`callRoom:${roomId}:participants`);
                 handleNotificationToAllUserInRoom(io, pubClient, roomId, 'audio-call-disconnected', {
+                    roomId: roomId,
+                    socketId: socket.id
+                });
+                //for VSCode
+                io.emit('audio-call-disconnected-all', {
                     roomId: roomId,
                     socketId: socket.id
                 });
