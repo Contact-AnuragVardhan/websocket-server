@@ -312,7 +312,7 @@ const createRoom = async (room, userId, username, initialMessages, socket, fromE
                 return { userId: id, username: uname || null };
             })
         );
-        io.to(room).emit('user_list', { room, users: userIds });
+        io.to(room).emit('user_list', { room, users });
         getAllRooms(socket);
         getUserRooms(userId, socket);
         logger.info(`Room ${room} created by userId ${userId}, username ${username}`);
