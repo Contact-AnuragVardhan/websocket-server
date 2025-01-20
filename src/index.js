@@ -100,9 +100,9 @@ async function getUsernameFromUserId(userId) {
 
             socket.on('user_connected', async ({ userId, username }) => {
                 // new code: store userId <-> username
+                validateUser(userId, username, 'user_connected');
                 storeUserIdAndUsername(userId, username);
 
-                validateUser(userId, username, 'user_connected');
                 handleSocketInitialization(socket, userId, username, null);
 
                 // new code: track sockets by userId
@@ -119,9 +119,9 @@ async function getUsernameFromUserId(userId) {
 
             socket.on('create_room', async ({ room, userId, username, initialMessages }) => {
                 try {
+                    validateUser(userId, username, 'create_room');
                     storeUserIdAndUsername(userId, username);
 
-                    validateUser(userId, username, 'create_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (!roomExists) {
                         await createRoom(room, userId, username, initialMessages, socket, 'create_room');
@@ -138,9 +138,9 @@ async function getUsernameFromUserId(userId) {
 
             socket.on('join_room', async ({ room, userId, username }) => {
                 try {
+                    validateUser(userId, username, 'join_room');
                     storeUserIdAndUsername(userId, username);
 
-                    validateUser(userId, username, 'join_room');
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
                         await addUserInRoom(room, userId, username, socket, 'join_room');
@@ -182,9 +182,9 @@ async function getUsernameFromUserId(userId) {
             });
 
             socket.on('get_user_rooms', async ({ userId, username }) => {
+                validateUser(userId, username, 'get_user_rooms');
                 storeUserIdAndUsername(userId, username);
 
-                validateUser(userId, username, 'get_user_rooms');
                 handleSocketInitialization(socket, userId, username, null);
                 getUserRooms(userId, socket);
             });
@@ -194,9 +194,9 @@ async function getUsernameFromUserId(userId) {
             });
 
             socket.on('get_room_messages', async ({ room, userId, username }) => {
+                validateUser(userId, username, 'get_room_messages');
                 storeUserIdAndUsername(userId, username);
 
-                validateUser(userId, username, 'get_room_messages');
                 getRoomMessages(room, -1, -1, socket, userId, username)
                     .then(({ messages, totalMessages }) => {
                         socket.emit('message_history', { room, messages, totalMessages });
@@ -207,9 +207,9 @@ async function getUsernameFromUserId(userId) {
             });
 
             socket.on('get_room_messages_pages', async ({ room, page = 1, pageSize = 50, userId, username }) => {
+                validateUser(userId, username, 'get_room_messages_pages');
                 storeUserIdAndUsername(userId, username);
 
-                validateUser(userId, username, 'get_room_messages_pages');
                 getRoomMessages(room, page, pageSize, socket, userId, username)
                     .then(({ messages, totalMessages }) => {
                         socket.emit('message_history_pages', { room, messages, page, pageSize, totalMessages });
@@ -224,9 +224,9 @@ async function getUsernameFromUserId(userId) {
             });
 
             socket.on('update_last_read_message', ({ room, userId, username }) => {
+                validateUser(userId, username, 'update_last_read_message');
                 storeUserIdAndUsername(userId, username);
 
-                validateUser(userId, username, 'update_last_read_message');
                 logger.info(`Updating Last Read Message for Room ${room} for userId ${userId}, username ${username}`);
                 handleSocketInitialization(socket, userId, username, null);
 
@@ -306,6 +306,12 @@ const createRoom = async (room, userId, username, initialMessages, socket, fromE
         }
 
         const userIds = await pubClient.sMembers(`room:${room}:users`);
+        const users = await Promise.all(
+            userIds.map(async (id) => {
+                const uname = await getUsernameFromUserId(id);
+                return { userId: id, username: uname || null };
+            })
+        );
         io.to(room).emit('user_list', { room, users: userIds });
         getAllRooms(socket);
         getUserRooms(userId, socket);
@@ -317,21 +323,23 @@ const createRoom = async (room, userId, username, initialMessages, socket, fromE
 
 const addUserInRoom = async (room, userId, username, socket, fromEvent) => {
     handleSocketInitialization(socket, userId, username, room);
+    validateUser(userId, username);
+    if(userId && username) {
+        const userInRoom = await pubClient.sIsMember(`room:${room}:users`, userId);
+        if (!userInRoom) {
+            logger.info(`UserId ${userId}, username ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
+            await pubClient.sAdd(`room:${room}:users`, userId);
+            await pubClient.sAdd(`userId:${userId}:rooms`, room);
 
-    const userInRoom = await pubClient.sIsMember(`room:${room}:users`, userId);
-    if (!userInRoom) {
-        logger.info(`UserId ${userId}, username ${username} is not in room ${room}. Adding to room from event ${fromEvent}`);
-        await pubClient.sAdd(`room:${room}:users`, userId);
-        await pubClient.sAdd(`userId:${userId}:rooms`, room);
+            const roomName = getRoomNameFromId(room);
+            addDefaultMessage(room, userId, username, `${username} joined the ${roomName}`);
 
-        const roomName = getRoomNameFromId(room);
-        addDefaultMessage(room, userId, username, `${username} joined the ${roomName}`);
-
-        const userIds = await pubClient.sMembers(`room:${room}:users`);
-        io.to(room).emit('user_list', { room, users: userIds });
-        getAllRooms(socket);
-        getUserRooms(userId, socket);
-        return true;
+            const userIds = await pubClient.sMembers(`room:${room}:users`);
+            io.to(room).emit('user_list', { room, users: userIds });
+            getAllRooms(socket);
+            getUserRooms(userId, socket);
+            return true;
+        }
     }
     return false;
 };
@@ -339,7 +347,13 @@ const addUserInRoom = async (room, userId, username, socket, fromEvent) => {
 const getAllUserInRooms = async (room, socket) => {
     try {
         const userIds = await pubClient.sMembers(`room:${room}:users`);
-        socket.emit('users_in_room', { room, users: userIds });
+        const users = await Promise.all(
+            userIds.map(async (id) => {
+                const uname = await getUsernameFromUserId(id);
+                return { userId: id, username: uname || null };
+            })
+        );
+        socket.emit('users_in_room', { room, users });
     } catch (error) {
         logger.error(`Error getting users in room ${room}:`, error);
         socket.emit('error_message', { message: `Failed to get users in room ${room}`, error });
@@ -578,7 +592,11 @@ const isValidDate = (dateString) => {
 const validateUser = (userId, username, method) => {
     if (!userId) {
         logger.error(`******** UserId is empty. We might have issue with websocket in method ${method} ********`);
-        //throw new Error('UserId is empty');
+        //throw new Error(`UserId is empty in method ${method}`);
+    }
+    if (!username) {
+        logger.error(`******** Username is empty. We might have issue with websocket in method ${method} ********`);
+        //throw new Error(`UserName is empty in method ${method}`);
     }
 };
 
