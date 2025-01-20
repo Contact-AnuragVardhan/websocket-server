@@ -335,7 +335,13 @@ const addUserInRoom = async (room, userId, username, socket, fromEvent) => {
             addDefaultMessage(room, userId, username, `${username} joined the ${roomName}`);
 
             const userIds = await pubClient.sMembers(`room:${room}:users`);
-            io.to(room).emit('user_list', { room, users: userIds });
+            const users = await Promise.all(
+                userIds.map(async (id) => {
+                    const uname = await getUsernameFromUserId(id);
+                    return { userId: id, username: uname || null };
+                })
+            );
+            io.to(room).emit('user_list', { room, users });
             getAllRooms(socket);
             getUserRooms(userId, socket);
             return true;
