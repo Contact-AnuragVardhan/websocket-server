@@ -144,10 +144,12 @@ async function getUsernameFromUserId(userId) {
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
                         await addUserInRoom(room, userId, username, socket, 'join_room');
+                        socket.emit('joined_room', { room });
                     } else {
-                        await createRoom(room, userId, username, null, socket, 'join_room');
+                        //await createRoom(room, userId, username, null, socket, 'join_room');
+                        socket.emit('room_not_valid', { room });
                     }
-                    socket.emit('joined_room', { room });
+                    
                 } catch (error) {
                     logger.error('Error joining room:', error);
                     socket.emit('error_message', { message: 'Failed to join room.', error });
