@@ -144,12 +144,10 @@ async function getUsernameFromUserId(userId) {
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
                         await addUserInRoom(room, userId, username, socket, 'join_room');
-                        socket.emit('joined_room', { room });
                     } else {
-                        //await createRoom(room, userId, username, null, socket, 'join_room');
-                        socket.emit('room_not_valid', { room });
+                        await createRoom(room, userId, username, null, socket, 'join_room');
                     }
-                    
+                    socket.emit('joined_room', { room });
                 } catch (error) {
                     logger.error('Error joining room:', error);
                     socket.emit('error_message', { message: 'Failed to join room.', error });
@@ -295,7 +293,7 @@ const createRoom = async (room, userId, username, initialMessages, socket, fromE
         await pubClient.sAdd('rooms:set', room);
 
         // Emit to all clients that a new room has been created
-        io.emit('room_created', { room });
+        //io.emit('room_created', { room });
         const roomName = getRoomNameFromId(room);
         const message = username ? `${roomName} created by ${username}` : `${roomName} created`;
         addDefaultMessage(room, userId, username, message);
@@ -484,12 +482,12 @@ const addMessage = async (data, messageType) => {
             logger.info(`added message ${JSON.stringify(messageData)}`);
             io.to(room).emit('receive_message', messageData);
             if (messageType !== 'system') {
-                io.emit('new_message_notification_all', { room, message: messageData });
+                //io.emit('new_message_notification_all', { room, message: messageData });
                 // Notifying all users who are part of the room, even if they're not connected to the room
                 const userIds = await pubClient.sMembers(`room:${room}:users`);
                 for (const uid of userIds) {
                     const userSocketIds = await pubClient.sMembers(`userId:${uid}:sockets`);
-                    logger.info(`userSocketIds for userId ${uid} are ${userSocketIds}`);
+                    logger.info(`userSocketIds for userId ${uid} and comparing userId ${userId} are ${userSocketIds}`);
                     if (userSocketIds && userSocketIds.length > 0) {
                         // only notify if the author is different
                         if (userId !== uid) {
