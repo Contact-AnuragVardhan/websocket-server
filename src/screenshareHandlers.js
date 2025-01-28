@@ -147,7 +147,7 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
     const sharerUserSocketIds = await pubClient.sMembers(`userId:${sharerUserId}:sockets`);
     const dataToEmit = participants.filter((p) => p.socketId !== socket.id);
     sharerUserSocketIds.forEach((sharerUserSocketId) => {
-      io.to(sharerUserSocketId).emit('screenshare-participants', dataToEmit);
+      io.to(sharerUserSocketId).emit('screenshare-participants', {participantIds: dataToEmit, initiatorUserId: sharerUserId});
     });
 
     //socket.emit('screenshare-participants', dataToEmit);
@@ -155,11 +155,13 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
     socket.emit('screenshare-room-joined', {
       roomId,
       socketId: socket.id,
-      userId
+      userId,
+      initiatorUserId: sharerUserId
     });
     socket.to(roomId).emit('screenshare-user-joined', {
       socketId: socket.id,
-      userId
+      userId,
+      initiatorUserId: sharerUserId
     });
 
     handleNotificationToAllUserInRoom(
@@ -167,7 +169,7 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
       pubClient,
       roomId,
       'screenshare-call-notification',
-      { roomId, socketId: socket.id, userId }
+      { roomId, socketId: socket.id, userId, initiatorUserId: sharerUserId }
     );
 
     await pubClient.sAdd(`socket:${socket.id}:screenshareRooms`, roomId);
@@ -238,10 +240,20 @@ async function screenshareLeaveAllRooms(io, pubClient, socket) {
 
 async function screenshareStopSharing(io, pubClient, roomId, socket) {
   try {
+    const sharerUserId = await pubClient.get(`screenshareRoom:${roomId}:sharerUserId`);
+
+    await handleNotificationToAllUserInRoom(
+      io,
+      pubClient,
+      roomId,
+      'screenshare-call-disconnected',
+      { roomId, socketId: socket.id, initiatorUserId: sharerUserId }
+    );
+
     const participantEntries = await pubClient.sMembers(`screenshareRoom:${roomId}:participants`);
     for (const entry of participantEntries) {
       const [participantSocketId, participantUserId] = entry.split('||');
-      
+
       await pubClient.sRem(`screenshareRoom:${roomId}:participants`, entry);
 
       //watchers know they're removed
@@ -262,14 +274,6 @@ async function screenshareStopSharing(io, pubClient, roomId, socket) {
     await pubClient.del(`screenshareRoom:${roomId}:sharerUserId`);
     await pubClient.del(`screenshareRoom:${roomId}:participants`);
 
-    handleNotificationToAllUserInRoom(
-      io,
-      pubClient,
-      roomId,
-      'screenshare-call-disconnected',
-      { roomId, socketId: socket.id }
-    );
-
     logger.info(`[screenshare] screenshareStopSharing completed for room ${roomId}`);
   } catch (error) {
     logger.error(`[screenshare] Error stopping screenshare for room ${roomId}:`, error);
@@ -277,9 +281,32 @@ async function screenshareStopSharing(io, pubClient, roomId, socket) {
   }
 }
 
+async function handleNotificationToAllUserInRoom(io, pubClient, roomId, notificationType, notificationParams) {
+  try {
+    const userIds = await pubClient.sMembers(`room:${roomId}:users`);
 
-function handleNotificationToAllUserInRoom(io, pubClient, roomId, notificationType, notificationParams) {
-  pubClient.sMembers(`room:${roomId}:users`)
+    const userPromises = userIds.map(async (uId) => {
+      const userSocketIds = await pubClient.sMembers(`userId:${uId}:sockets`);
+      if (userSocketIds && userSocketIds.length > 0) {
+        userSocketIds.forEach((userSocketId) => {
+          io.to(userSocketId).emit(notificationType, {
+            ...notificationParams,
+            user: uId
+          });
+        });
+      }
+    });
+
+    await Promise.all(userPromises);
+
+  } catch (err) {
+    logger.error(`[screenshare] Error handling notifications:`, err);
+    throw err;
+  }
+}
+
+/*function handleNotificationToAllUserInRoom(io, pubClient, roomId, notificationType, notificationParams) {
+  return pubClient.sMembers(`room:${roomId}:users`)
     .then((userIds) => {
       const userPromises = userIds.map((uId) => {
         return pubClient.sMembers(`userId:${uId}:sockets`).then((userSocketIds) => {
@@ -298,7 +325,7 @@ function handleNotificationToAllUserInRoom(io, pubClient, roomId, notificationTy
     .catch((err) => {
       logger.error(`[screenshare] Error handling notifications:`, err);
     });
-}
+}*/
 
 module.exports = {
   setupScreenShareEvents,
