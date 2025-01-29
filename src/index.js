@@ -18,7 +18,8 @@ const {
 
 const { 
     setupScreenShareEvents,
-    removeScreenShareEvents
+    removeScreenShareEvents,
+    autoJoinScreenshareRoom
 } = require('./screenshareHandlers');
 
 const app = express();
@@ -128,6 +129,7 @@ async function getUsernameFromUserId(userId) {
                     } else {
                         logger.info(`Room ${room} already exists`);
                         await addUserInRoom(room, userId, username, socket, 'create_room');
+                        autoJoinScreenshareRoom(socket, room, pubClient, userId, username);
                     }
                     socket.emit('joined_room', { room });
                 } catch (error) {
@@ -144,6 +146,7 @@ async function getUsernameFromUserId(userId) {
                     const roomExists = await pubClient.exists(`room:${room}:users`);
                     if (roomExists) {
                         await addUserInRoom(room, userId, username, socket, 'join_room');
+                        autoJoinScreenshareRoom(socket, room, pubClient, userId, username);
                     } else {
                         await createRoom(room, userId, username, null, socket, 'join_room');
                     }

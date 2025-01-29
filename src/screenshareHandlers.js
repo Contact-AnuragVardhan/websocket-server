@@ -65,7 +65,7 @@ async function screenshareCreateRoom(io, roomId, socket, pubClient, userId) {
       pubClient,
       roomId,
       'screenshare-call-notification',
-      { roomId, socketId: socket.id, userId }
+      { roomId, socketId: socket.id, initiatorUserId: userId }
     );
 
     await pubClient.sAdd(`socket:${socket.id}:screenshareRooms`, roomId);
@@ -84,6 +84,7 @@ async function screenshareCreateRoom(io, roomId, socket, pubClient, userId) {
 
 async function autoJoinAllChatRoomParticipants(io, pubClient, screenshareRoomId) {
   const mainChatUserIds = await pubClient.sMembers(`room:${screenshareRoomId}:users`);
+  const sharerUserId = await pubClient.get(`screenshareRoom:${screenshareRoomId}:sharerUserId`);
 
   for (const participantUserId of mainChatUserIds) {
     const participantSockets = await pubClient.sMembers(`userId:${participantUserId}:sockets`);
@@ -95,39 +96,34 @@ async function autoJoinAllChatRoomParticipants(io, pubClient, screenshareRoomId)
           roomId: screenshareRoomId,
           socketId: participantSocketId,
           userId: participantUserId,
+          initiatorUserId: sharerUserId
         });
-        // 3) Mark them in the screenshare participants set
-        /*await pubClient.sAdd(
-          `screenshareRoom:${screenshareRoomId}:participants`,
-          `${participantSocketId}||${participantUserId}`
-        );
-        
-        // 4) Force server-side to join the room
-        participantSocket.join(screenshareRoomId);
-
-        // 5) Let that socket know they joined
-        participantSocket.emit('screenshare-room-joined', {
-          roomId: screenshareRoomId,
-          socketId: participantSocketId,
-          userId: participantUserId,
-        });
-
-        // 6) Broadcast to others
-        participantSocket.to(screenshareRoomId).emit('screenshare-user-joined', {
-          socketId: participantSocketId,
-          userId: participantUserId,
-        });*/
       }
     }
+  }
+}
 
-    //streamline it
-    /*const participantsRaw = await pubClient.sMembers(`screenshareRoom:${screenshareRoomId}:participants`);
-    const participants = participantsRaw.map((str) => {
-      const [sId, uId] = str.split('||');
-      return { socketId: sId, userId: uId };
+async function autoJoinScreenshareRoom(socket, roomId, pubClient, userId, username) {
+  const hostId = await pubClient.get(`screenshareRoom:${roomId}:host`);
+  if (hostId) {
+    const sharerUserId = await pubClient.get(`screenshareRoom:${roomId}:sharerUserId`);
+
+    //for screenshare webview in case it joins rooms after screenshare starts
+    socket.emit('screenshare-call-notification', {
+      roomId,
+      socketId: socket.id,
+      userId,
+      initiatorUserId: sharerUserId
     });
 
-    socket.emit('screenshare-participants', participants.filter((p) => p.socketId !== socket.id));*/
+    //for electron and web in case it joins rooms after screenshare starts
+    socket.emit('screenshare-ask-user-to-join-room', {
+      roomId,
+      socketId: socket.id,
+      userId,
+      initiatorUserId: sharerUserId
+    });
+
   }
 }
 
@@ -147,7 +143,7 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
     const sharerUserSocketIds = await pubClient.sMembers(`userId:${sharerUserId}:sockets`);
     const dataToEmit = participants.filter((p) => p.socketId !== socket.id);
     sharerUserSocketIds.forEach((sharerUserSocketId) => {
-      io.to(sharerUserSocketId).emit('screenshare-participants', {participantIds: dataToEmit, initiatorUserId: sharerUserId});
+      io.to(sharerUserSocketId).emit('screenshare-participants', { participantIds: dataToEmit, initiatorUserId: sharerUserId });
     });
 
     //socket.emit('screenshare-participants', dataToEmit);
@@ -164,13 +160,13 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
       initiatorUserId: sharerUserId
     });
 
-    handleNotificationToAllUserInRoom(
+    /*handleNotificationToAllUserInRoom(
       io,
       pubClient,
       roomId,
       'screenshare-call-notification',
       { roomId, socketId: socket.id, userId, initiatorUserId: sharerUserId }
-    );
+    );*/
 
     await pubClient.sAdd(`socket:${socket.id}:screenshareRooms`, roomId);
   } else {
@@ -181,6 +177,7 @@ async function screenshareJoinRoom(io, roomId, socket, pubClient, userId) {
 async function screenshareLeaveRoom(io, pubClient, roomId, socket) {
   try {
     if (roomId) {
+      logger.info(`Stopping Screenshare for room ${roomId}`);
       await pubClient.sRem(
         `screenshareRoom:${roomId}:participants`,
         `${socket.id}||${socket.userId}`
@@ -208,6 +205,7 @@ async function screenshareLeaveRoom(io, pubClient, roomId, socket) {
       socket.leave(roomId);
       socket.emit('screenshare-left-room', roomId);
       logger.info(`[screenshare] Socket ${socket.id} left room ${roomId}`);
+      logger.info(`Stopped Screenshare for room ${roomId}`);
     }
   } catch (error) {
     logger.error(`[screenshare] Error leaving room ${roomId}:`, error);
@@ -224,7 +222,7 @@ async function screenshareLeaveAllRooms(io, pubClient, socket) {
     io.to(ssRoomId).emit('screenshare-user-left', { socketId: socket.id, userId: socket.userId });
     if (size === 0) {
       await pubClient.del(`screenshareRoom:${ssRoomId}:host`);
-      await pubClient.del(`screenshareRoom:${roomId}:sharerUserId`);
+      await pubClient.del(`screenshareRoom:${ssRoomId}:sharerUserId`);
       await pubClient.del(`screenshareRoom:${ssRoomId}:participants`);
       handleNotificationToAllUserInRoom(
         io,
@@ -291,6 +289,7 @@ async function handleNotificationToAllUserInRoom(io, pubClient, roomId, notifica
         userSocketIds.forEach((userSocketId) => {
           io.to(userSocketId).emit(notificationType, {
             ...notificationParams,
+            userId: uId,
             user: uId
           });
         });
@@ -334,4 +333,5 @@ module.exports = {
   screenshareJoinRoom,
   screenshareLeaveRoom,
   screenshareLeaveAllRooms,
+  autoJoinScreenshareRoom
 };
