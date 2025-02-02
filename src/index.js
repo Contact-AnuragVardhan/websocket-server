@@ -22,6 +22,8 @@ const {
     autoJoinScreenshareRoom
 } = require('./screenshareHandlers');
 
+const { upload, handleFileUpload } = require('./fileUploaded'); 
+
 const app = express();
 
 app.use(express.json());
@@ -716,3 +718,5 @@ app.post('/api/linkPreview', async (req, res) => {
         return res.status(500).json({ error: 'Failed to fetch metadata.' });
     }
 });
+
+app.post('/api/uploadAttachment', upload.single('file'), handleFileUpload);
